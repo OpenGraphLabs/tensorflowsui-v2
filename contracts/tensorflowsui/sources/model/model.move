@@ -7,6 +7,7 @@ module tensorflowsui::model {
     use tensorflowsui::dataset;
     use std::string::{String};
     use tensorflowsui::tensor;
+    use tensorflowsui::layer;
     use sui::event;
     
     /// @dev Error when dimension pair does not match
@@ -65,6 +66,30 @@ module tensorflowsui::model {
         output_magnitude: vector<u64>,
         output_sign: vector<u64>,
         argmax_idx: u64,
+    }
+
+    public fun new_model_v2(
+        name: String,
+        description: String,
+        task_type: String,
+        layers: vector<layer::Layer>,
+        scale: u64,
+        training_dataset_id: Option<ID>,
+        test_dataset_ids: Option<vector<ID>>,
+        ctx: &mut TxContext,
+    ) {
+        let model = Model {
+            id: object::new(ctx),
+            name,
+            description,
+            task_type,
+            graphs: vector::empty<SignedFixedGraph>(),
+            scale,
+            training_dataset_id,
+            test_dataset_ids,
+        };
+
+        transfer::transfer(model, tx_context::sender(ctx));
     }
 
     /// @notice Custom model initialization function - creates a model with user provided data
