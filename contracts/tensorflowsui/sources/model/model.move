@@ -7,7 +7,6 @@ module tensorflowsui::model {
     use tensorflowsui::dataset;
     use std::string::{String};
     use tensorflowsui::tensor;
-    use tensorflowsui::layer;
     use sui::event;
     
     /// @dev Error when dimension pair does not match
@@ -68,28 +67,19 @@ module tensorflowsui::model {
         argmax_idx: u64,
     }
 
-    public fun new_model_v2(
-        name: String,
-        description: String,
-        task_type: String,
-        layers: vector<layer::Layer>,
-        scale: u64,
-        training_dataset_id: Option<ID>,
-        test_dataset_ids: Option<vector<ID>>,
-        ctx: &mut TxContext,
-    ) {
-        let model = Model {
-            id: object::new(ctx),
-            name,
-            description,
-            task_type,
-            graphs: vector::empty<SignedFixedGraph>(),
-            scale,
-            training_dataset_id,
-            test_dataset_ids,
-        };
+    public struct MODEL has drop {}
 
-        transfer::transfer(model, tx_context::sender(ctx));
+    public struct OpenGraphManagerCap has key {
+        id: UID
+    }
+
+    public fun new_open_graph_manager_cap(_witness: MODEL, ctx: &mut TxContext): OpenGraphManagerCap {
+        OpenGraphManagerCap { id: object::new(ctx) }        
+    }
+
+    fun init(witness: MODEL, ctx: &mut TxContext) {
+        let cap = new_open_graph_manager_cap(witness, ctx);
+        transfer::transfer(cap, tx_context::sender(ctx));
     }
 
     /// @notice Custom model initialization function - creates a model with user provided data
@@ -143,7 +133,7 @@ module tensorflowsui::model {
         };
 
         // NOTE(jarry): currently, we handle only one graph
-        let graph = graph::create_signed_graph(ctx);
+        let graph = graph::create_signed_graph();
         vector::push_back(&mut model.graphs, graph);
         
         let mut layer_idx = 0;
@@ -180,9 +170,14 @@ module tensorflowsui::model {
             
             layer_idx = layer_idx + 1;
         };
-    
 
-        transfer::transfer(model, tx_context::sender(ctx));
+        transfer::share_object(model);
+    }
+
+
+    public fun delete_model(model: Model, _: &OpenGraphManagerCap) {
+        let Model { id, .. } = model;
+        id.delete();
     }
 
     /// @notice Helper function to get model name as String

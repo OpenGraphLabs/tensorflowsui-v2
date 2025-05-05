@@ -26,13 +26,12 @@ module tensorflowsui::graph {
         bias_tensor: tensor::SignedFixedTensor,    
     }
 
-    public struct SignedFixedGraph has key, store {
-        id : UID,
+    public struct SignedFixedGraph has drop, store {
         layers: vector<SignedFixedLayer>,
     }
 
-    public fun create_signed_graph(ctx: &mut TxContext): SignedFixedGraph {
-        SignedFixedGraph { id: object::new(ctx), layers: vector::empty<SignedFixedLayer>() }
+    public fun create_signed_graph(): SignedFixedGraph {
+        SignedFixedGraph { layers: vector::empty<SignedFixedLayer>() }
     }
 
     public fun get_layer_at(graph: &SignedFixedGraph, idx: u64): &SignedFixedLayer {
