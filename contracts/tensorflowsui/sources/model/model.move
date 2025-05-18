@@ -33,6 +33,10 @@ module tensorflowsui::model {
     const EInvalidModelState: u64 = 1021;
     /// @dev Error when partial layer parameters are invalid
     const EInvalidPartialLayerParams: u64 = 1023;
+    /// Error when output batch index is out of range
+    const EOutputBatchIndexOutOfBounds: u64 = 1024;
+    /// Error when input index is out of range
+    const EInputIndexOutOfBounds: u64 = 1025;
 
     // Model state constants
     const MODEL_STATE_INCOMPLETE: u8 = 0;
@@ -53,15 +57,6 @@ module tensorflowsui::model {
         state: u8, // 0 = incomplete, 1 = complete
         current_graph_idx: u64, // tracks which graph is currently being constructed
         current_layer_idx: u64, // tracks which layer is currently being constructed
-    }
-    
-    /// @notice Event emitted when a layer computation is completed
-    public struct LayerComputed has copy, drop {
-        model_id: address,
-        layer_idx: u64,
-        output_magnitude: vector<u64>,
-        output_sign: vector<u64>,
-        activation_type: u64,
     }
     
     /// @notice Event emitted when model prediction is complete
@@ -99,6 +94,66 @@ module tensorflowsui::model {
         layer_idx: u64,
         in_dimension: u64,
         out_dimension: u64,
+    }
+
+    /// @notice Event emitted when an input node computation is completed
+    public struct InputNodeComputed has copy, drop {
+        model_id: address,
+        layer_idx: u64,
+        input_idx: u64,
+        output_start_idx: u64,
+        output_end_idx: u64,
+        is_last_input: bool,
+        is_last_output_batch: bool,
+    }
+
+    /// @notice Event emitted when a partial layer computation is completed
+    public struct LayerPartialComputed has copy, drop {
+        model_id: address,
+        layer_idx: u64,
+        output_dim_idx: u64,
+        output_magnitude: u64,
+        output_sign: u64,
+        is_last_dimension: bool
+    }
+
+    /// @notice Event emitted when a layer creation starts
+    public struct LayerStarted has copy, drop {
+        model_id: address,
+        graph_idx: u64,
+        layer_idx: u64,
+        in_dimension: u64,
+        out_dimension: u64,
+    }
+
+    /// @notice Event emitted when a layer is completed
+    public struct LayerCompleted has copy, drop {
+        model_id: address,
+        graph_idx: u64,
+        layer_idx: u64,
+        in_dimension: u64,
+        out_dimension: u64,
+        is_final_layer: bool,
+    }
+
+    /// @notice Event emitted when a weights chunk is added
+    public struct WeightsChunkAdded has copy, drop {
+        model_id: address,
+        graph_idx: u64,
+        layer_idx: u64,
+        start_idx: u64,
+        chunk_size: u64,
+        is_last_chunk: bool,
+    }
+
+    /// @notice Event emitted when a biases chunk is added
+    public struct BiasesChunkAdded has copy, drop {
+        model_id: address,
+        graph_idx: u64,
+        layer_idx: u64,
+        start_idx: u64,
+        chunk_size: u64,
+        is_last_chunk: bool,
     }
 
     public struct MODEL has drop {}
@@ -567,6 +622,380 @@ module tensorflowsui::model {
         max_idx
     }
     
+    /// @notice Process a single input node against a batch of output nodes (gas efficient version)
+    /// @param model Model object to run inference on
+    /// @param layer_idx Index of the layer to process
+    /// @param input_idx Index of the input node to process
+    /// @param input_magnitude Magnitude values of the input vector
+    /// @param input_sign Sign values of the input vector
+    /// @param output_start_idx Starting index of output batch to process
+    /// @param output_batch_size Size of output batch to process
+    /// @param result_magnitudes Current accumulated magnitude results
+    /// @param result_signs Current accumulated sign results
+    /// @return Tuple of (result_magnitudes, result_signs, input_idx, next output_start_idx, is_last_input, is_last_output_batch)
+    public fun predict_layer_by_input_node(
+        model: &Model,
+        layer_idx: u64,
+        input_idx: u64,
+        input_magnitude: vector<u64>,
+        input_sign: vector<u64>,
+        output_start_idx: u64,
+        output_batch_size: u64,
+        mut result_magnitudes: vector<u64>,
+        mut result_signs: vector<u64>,
+    ): (vector<u64>, vector<u64>, u64, u64, bool, bool) {
+        // Validate model has at least one graph
+        assert!(vector::length(&model.graphs) > 0, EModelHasNoGraphs);
+        
+        // Get the first graph (currently we only support one graph per model)
+        let graph = vector::borrow(&model.graphs, 0);
+        
+        // Check if layer_idx is valid
+        let layer_count = graph::get_layer_count(graph);
+        assert!(layer_idx < layer_count, ELayerIndexOutOfBounds);
+        
+        // Get the target layer
+        let layer = graph::get_layer_at(graph, layer_idx);
+        let input_dim = layer::get_in_dimension(layer);
+        let output_dim = layer::get_out_dimension(layer);
+        
+        // Validate input index
+        assert!(input_idx < input_dim, EInputIndexOutOfBounds);
+        
+        // Validate input dimensions
+        assert!(vector::length(&input_magnitude) == input_dim, EInputDimensionMismatch);
+        assert!(vector::length(&input_sign) == input_dim, EInputDimensionMismatch);
+        
+        // Validate output batch bounds
+        assert!(output_start_idx < output_dim, EOutputBatchIndexOutOfBounds);
+        
+        // Check if this is the last layer
+        let is_last_layer = layer_idx == layer_count - 1;
+        
+        // Calculate the end index for output batch, capped at output_dim
+        let output_end_idx = if (output_start_idx + output_batch_size > output_dim) {
+            output_dim
+        } else {
+            output_start_idx + output_batch_size
+        };
+        
+        // Check if this is the last input node and last output batch
+        let is_last_input = input_idx == input_dim - 1;
+        let is_last_output_batch = output_end_idx == output_dim;
+        
+        // Get weight and bias tensors
+        let weight_tensor = layer::get_weight_tensor(layer);
+        let bias_tensor = layer::get_bias_tensor(layer);
+        
+        // Extract weight and bias data
+        let weight_mag = tensor::get_magnitude(weight_tensor);
+        let weight_sign = tensor::get_sign(weight_tensor);
+        let bias_mag = tensor::get_magnitude(bias_tensor);
+        let bias_sign = tensor::get_sign(bias_tensor);
+        
+        // Get input value for this node
+        let input_mag_val = *vector::borrow(&input_magnitude, input_idx);
+        let input_sign_val = *vector::borrow(&input_sign, input_idx);
+        
+        // Initialize or get the results vectors
+        // If first input node and first batch, ensure vectors are empty or correctly sized
+        if (input_idx == 0 && output_start_idx == 0) {
+            // If it's the first input node and first batch, initialize result vectors
+            // Either they should be empty or already sized correctly from previous layers
+            if (vector::length(&result_magnitudes) == 0) {
+                // First layer or empty results
+                // Add biases to initialize the result
+                let mut j = 0;
+                while (j < output_dim) {
+                    let bias_mag_val = if (j < vector::length(&bias_mag)) {
+                        *vector::borrow(&bias_mag, j)
+                    } else {
+                        0
+                    };
+                    
+                    let bias_sign_val = if (j < vector::length(&bias_sign)) {
+                        *vector::borrow(&bias_sign, j)
+                    } else {
+                        0
+                    };
+                    
+                    vector::push_back(&mut result_magnitudes, bias_mag_val);
+                    vector::push_back(&mut result_signs, bias_sign_val);
+                    
+                    j = j + 1;
+                };
+            } else {
+                // Verify results are correctly sized for this layer
+                assert!(vector::length(&result_magnitudes) == output_dim, ELayerDimensionMismatch);
+                assert!(vector::length(&result_signs) == output_dim, ELayerDimensionMismatch);
+            };
+        };
+        
+        // Process each output node in the batch for this input node
+        let mut j = output_start_idx;
+        while (j < output_end_idx) {
+            // Calculate weight index for this input-output connection
+            let weight_idx = input_idx * output_dim + j;
+            
+            if (weight_idx < vector::length(&weight_mag)) {
+                let weight_mag_val = *vector::borrow(&weight_mag, weight_idx);
+                let weight_sign_val = *vector::borrow(&weight_sign, weight_idx);
+                
+                // Multiply input value with weight
+                let product_mag = input_mag_val * weight_mag_val;
+                let product_sign = input_sign_val ^ weight_sign_val; // XOR for sign multiplication
+                
+                // Apply scaling after multiplication
+                let scaled_product_mag = math::scale_up(product_mag, model.scale);
+                
+                // Add to accumulated result
+                let result_mag = *vector::borrow(&result_magnitudes, j);
+                let result_sign = *vector::borrow(&result_signs, j);
+                
+                // Add product to result (considering signs)
+                let (new_mag, new_sign) = if (result_sign == product_sign) {
+                    // Same sign, simply add magnitudes
+                    (result_mag + scaled_product_mag, result_sign)
+                } else {
+                    // Different signs, subtract smaller from larger and determine sign
+                    if (result_mag > scaled_product_mag) {
+                        (result_mag - scaled_product_mag, result_sign)
+                    } else if (result_mag < scaled_product_mag) {
+                        (scaled_product_mag - result_mag, product_sign)
+                    } else {
+                        // Equal magnitudes with different signs cancel out
+                        (0, 0) // Default to positive for zero
+                    }
+                };
+                
+                // Update result vectors
+                *vector::borrow_mut(&mut result_magnitudes, j) = new_mag;
+                *vector::borrow_mut(&mut result_signs, j) = new_sign;
+            };
+            
+            j = j + 1;
+        };
+        
+        // If this is the last input node and last output batch, apply activation function
+        if (is_last_input && is_last_output_batch && !is_last_layer) {
+            // Apply ReLU activation: max(0, x) for all elements
+            let mut k = 0;
+            while (k < output_dim) {
+                let sign = *vector::borrow(&result_signs, k);
+                
+                // For ReLU, if sign is negative (1), set to zero
+                if (sign == 1) {
+                    *vector::borrow_mut(&mut result_magnitudes, k) = 0;
+                    *vector::borrow_mut(&mut result_signs, k) = 0;
+                };
+                
+                k = k + 1;
+            };
+        };
+        
+        // Emit input node computed event
+        event::emit(InputNodeComputed {
+            model_id: object::id_address(model),
+            layer_idx,
+            input_idx,
+            output_start_idx,
+            output_end_idx,
+            is_last_input,
+            is_last_output_batch,
+        });
+        
+        // If this is the last layer, last input, and last output batch, calculate argmax
+        if (is_last_layer && is_last_input && is_last_output_batch) {
+            // Calculate argmax from the results
+            let argmax_idx = find_argmax(&result_magnitudes, &result_signs);
+            
+            // Emit completion event with the results
+            event::emit(PredictionCompleted {
+                model_id: object::id_address(model),
+                output_magnitude: result_magnitudes,
+                output_sign: result_signs,
+                argmax_idx
+            });
+        };
+        
+        // Return the updated results, current input index, and next output batch start index
+        let next_output_start_idx = if (is_last_output_batch) {
+            0 // Reset to 0 for next input node
+        } else {
+            output_end_idx // Continue from where we left off
+        };
+        
+        (result_magnitudes, result_signs, input_idx, next_output_start_idx, is_last_input, is_last_output_batch)
+    }
+
+    /// Process a single output dimension by chunks of input nodes
+    /// @param model Model object to run inference on
+    /// @param layer_idx Index of the layer to process
+    /// @param output_dim_idx Index of the output dimension to process (0 to out_dim-1)
+    /// @param input_magnitude Magnitude values of the input vector
+    /// @param input_sign Sign values of the input vector
+    /// @param chunk_start_idx Starting index in the input vector to process
+    /// @param chunk_size Number of input nodes to process in this chunk
+    /// @param accumulated_current_mag Current accumulated result magnitude from previous chunks
+    /// @param accumulated_current_sign Current accumulated result sign from previous chunks
+    /// @param result_magnitudes Vector of accumulated magnitude values
+    /// @param result_signs Vector of accumulated sign values
+    /// @return Tuple of (result_magnitudes, result_signs, current magnitude, current sign)
+    public fun predict_layer_partial_chunked(
+        model: &Model,
+        layer_idx: u64,
+        output_dim_idx: u64,
+        input_magnitude: vector<u64>,
+        input_sign: vector<u64>,
+        chunk_start_idx: u64,
+        chunk_size: u64,
+        accumulated_current_mag: u64,
+        accumulated_current_sign: u64,
+        mut result_magnitudes: vector<u64>,
+        mut result_signs: vector<u64>,
+    ): (vector<u64>, vector<u64>, u64, u64) {
+        // Validate model has at least one graph
+        assert!(vector::length(&model.graphs) > 0, EModelHasNoGraphs);
+        
+        // Get the first graph (currently we only support one graph per model)
+        let graph = vector::borrow(&model.graphs, 0);
+        
+        // Check if layer_idx is valid
+        let layer_count = graph::get_layer_count(graph);
+        assert!(layer_idx < layer_count, ELayerIndexOutOfBounds);
+        
+        // Get the target layer
+        let layer = graph::get_layer_at(graph, layer_idx);
+        let input_dim = layer::get_in_dimension(layer);
+        let output_dim = layer::get_out_dimension(layer);
+        
+        // Validate output dimension index
+        assert!(output_dim_idx < output_dim, EDimensionIndexOutOfBounds);
+        
+        // Validate input dimensions
+        assert!(vector::length(&input_magnitude) == input_dim, EInputDimensionMismatch);
+        assert!(vector::length(&input_sign) == input_dim, EInputDimensionMismatch);
+        
+        // Calculate ending index for this chunk, ensuring we don't exceed input dimension
+        let chunk_end_idx = if (chunk_start_idx + chunk_size > input_dim) {
+            input_dim
+        } else {
+            chunk_start_idx + chunk_size
+        };
+        
+        // Check if this is the last layer and last dimension
+        let is_last_layer = layer_idx == layer_count - 1;
+        let is_last_dimension = output_dim_idx == output_dim - 1;
+        let is_last_chunk = chunk_end_idx == input_dim;
+        
+        // Get weight and bias tensors
+        let weight_tensor = layer::get_weight_tensor(layer);
+        let bias_tensor = layer::get_bias_tensor(layer);
+        
+        // Extract weight and bias data
+        let weight_mag = tensor::get_magnitude(weight_tensor);
+        let weight_sign = tensor::get_sign(weight_tensor);
+        let bias_mag = tensor::get_magnitude(bias_tensor);
+        let bias_sign = tensor::get_sign(bias_tensor);
+        
+        // Initialize result with accumulated values from previous chunks
+        let mut current_magnitude = accumulated_current_mag;
+        let mut current_sign = accumulated_current_sign;
+        
+        // Add bias for this dimension (only if this is the first chunk)
+        if (chunk_start_idx == 0) {
+            if (output_dim_idx < vector::length(&bias_mag)) {
+                current_magnitude = *vector::borrow(&bias_mag, output_dim_idx);
+                current_sign = *vector::borrow(&bias_sign, output_dim_idx);
+            };
+        };
+        
+        // Calculate dot product for this chunk of the output dimension
+        let mut i = chunk_start_idx;
+        while (i < chunk_end_idx) {
+            // Get weight for this connection (input_dim x output_dim_idx)
+            // Flattened index calculation for weight matrix
+            let weight_idx = i * output_dim + output_dim_idx;
+            
+            if (weight_idx < vector::length(&weight_mag)) {
+                let weight_mag_val = *vector::borrow(&weight_mag, weight_idx);
+                let weight_sign_val = *vector::borrow(&weight_sign, weight_idx);
+                
+                // Get input value
+                let input_mag_val = *vector::borrow(&input_magnitude, i);
+                let input_sign_val = *vector::borrow(&input_sign, i);
+                
+                // Multiply
+                let product_mag = input_mag_val * weight_mag_val;
+                let product_sign = input_sign_val ^ weight_sign_val; // XOR for sign multiplication
+                
+                // Apply scaling after multiplication
+                let scaled_product_mag = math::scale_up(product_mag, model.scale);
+                
+                // Add to result (considering signs)
+                if (current_sign == product_sign) {
+                    // Same sign, simply add magnitudes
+                    current_magnitude = current_magnitude + scaled_product_mag;
+                } else {
+                    // Different signs, subtract smaller from larger and determine sign
+                    if (current_magnitude > scaled_product_mag) {
+                        current_magnitude = current_magnitude - scaled_product_mag;
+                        // current_sign stays the same
+                    } else if (current_magnitude < scaled_product_mag) {
+                        current_magnitude = scaled_product_mag - current_magnitude;
+                        current_sign = product_sign; // Take sign of the larger value
+                    } else {
+                        // Equal magnitudes with different signs cancel out
+                        current_magnitude = 0;
+                        current_sign = 0; // Default to positive for zero
+                    }
+                };
+            };
+            
+            i = i + 1;
+        };
+        
+        // If this is the last chunk for this output dimension
+        if (is_last_chunk) {
+            // Apply activation if not last layer (ReLU: max(0, x))
+            if (!is_last_layer && current_sign == 1) {
+                // If negative and using ReLU, set to zero
+                current_magnitude = 0;
+                current_sign = 0;
+            };
+            
+            // Add the result to the accumulated vectors
+            vector::push_back(&mut result_magnitudes, current_magnitude);
+            vector::push_back(&mut result_signs, current_sign);
+            
+            // Emit partial result event
+            event::emit(LayerPartialComputed {
+                model_id: object::id_address(model),
+                layer_idx,
+                output_dim_idx,
+                output_magnitude: current_magnitude,
+                output_sign: current_sign,
+                is_last_dimension
+            });
+            
+            // If this is the last layer and last dimension, we can calculate the argmax
+            if (is_last_layer && is_last_dimension) {
+                // Calculate argmax from the accumulated result vectors
+                let argmax_idx = find_argmax(&result_magnitudes, &result_signs);
+                
+                // Emit completion event with the full accumulated results
+                event::emit(PredictionCompleted {
+                    model_id: object::id_address(model),
+                    output_magnitude: result_magnitudes,
+                    output_sign: result_signs,
+                    argmax_idx
+                });
+            };
+        };
+        
+        (result_magnitudes, result_signs, current_magnitude, current_sign)
+    }
+
     /// @notice Process a single output dimension of a layer (gas efficient version)
     /// @param model Model object to run inference on
     /// @param layer_idx Index of the layer to process
@@ -576,7 +1005,7 @@ module tensorflowsui::model {
     /// @param result_magnitudes Vector of accumulated magnitude values
     /// @param result_signs Vector of accumulated sign values
     /// @return Tuple of (output magnitude scalar, output sign scalar, output dimension index, is last dimension)
-    entry public fun predict_layer_partial(
+    public fun predict_layer_partial(
         model: &Model,
         layer_idx: u64,
         output_dim_idx: u64,
@@ -711,55 +1140,6 @@ module tensorflowsui::model {
         };
         
         (result_magnitudes, result_signs, output_dim_idx, is_last_dimension)
-    }
-    
-    /// @notice Event emitted when a partial layer computation is completed
-    public struct LayerPartialComputed has copy, drop {
-        model_id: address,
-        layer_idx: u64,
-        output_dim_idx: u64,
-        output_magnitude: u64,
-        output_sign: u64,
-        is_last_dimension: bool
-    }
-
-    /// @notice Event emitted when a layer creation starts
-    public struct LayerStarted has copy, drop {
-        model_id: address,
-        graph_idx: u64,
-        layer_idx: u64,
-        in_dimension: u64,
-        out_dimension: u64,
-    }
-
-    /// @notice Event emitted when a layer is completed
-    public struct LayerCompleted has copy, drop {
-        model_id: address,
-        graph_idx: u64,
-        layer_idx: u64,
-        in_dimension: u64,
-        out_dimension: u64,
-        is_final_layer: bool,
-    }
-
-    /// @notice Event emitted when a weights chunk is added
-    public struct WeightsChunkAdded has copy, drop {
-        model_id: address,
-        graph_idx: u64,
-        layer_idx: u64,
-        start_idx: u64,
-        chunk_size: u64,
-        is_last_chunk: bool,
-    }
-
-    /// @notice Event emitted when a biases chunk is added
-    public struct BiasesChunkAdded has copy, drop {
-        model_id: address,
-        graph_idx: u64,
-        layer_idx: u64,
-        start_idx: u64,
-        chunk_size: u64,
-        is_last_chunk: bool,
     }
 
 }
