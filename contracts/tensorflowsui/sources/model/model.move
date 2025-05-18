@@ -3,9 +3,11 @@
 
 /// @title Fully Onchain Neural Network Inference Implementation
 module tensorflowsui::model {
-    use tensorflowsui::graph::{Self, SignedFixedGraph};
+    use tensorflowsui::graph::{Self, Graph};
+    use tensorflowsui::layer;
     use tensorflowsui::dataset;
-    use std::string::{String};
+    use tensorflowsui::math;
+    use std::string::{Self, String};
     use tensorflowsui::tensor;
     use sui::event;
     
@@ -44,7 +46,7 @@ module tensorflowsui::model {
         name: String,
         description: String,
         task_type: String,
-        graphs: vector<SignedFixedGraph>,
+        graphs: vector<Graph>,
         scale: u64,
         training_dataset_id: Option<ID>,
         test_dataset_ids: Option<vector<ID>>,
@@ -126,14 +128,14 @@ module tensorflowsui::model {
             name,
             description,
             task_type,
-            graphs: vector::empty<SignedFixedGraph>(),
+            graphs: vector::empty<Graph>(),
             scale,
             training_dataset_id,
             test_dataset_ids,
         };
 
         // NOTE(jarry): currently, we handle only one graph
-        let graph = graph::create_signed_graph();
+        let graph = graph::new_graph();
         vector::push_back(&mut model.graphs, graph);
         
         let mut layer_idx = 0;
@@ -157,8 +159,8 @@ module tensorflowsui::model {
             assert!(vector::length(biases_magnitude) == out_dimension, EBiasesVectorLengthMismatch);
             
             // Create layer and add to graph with user-provided weights and biases
-            graph::build_signed_fixed_layer(
-                &mut model.graphs[0], 
+            let layer = layer::new_layer(
+                string::utf8(b"dense"), 
                 in_dimension, 
                 out_dimension, 
                 *weights_magnitude, 
@@ -167,7 +169,7 @@ module tensorflowsui::model {
                 *biases_sign, 
                 scale
             );
-            
+            graph::add_layer(&mut model.graphs[0], layer);
             layer_idx = layer_idx + 1;
         };
 
@@ -264,7 +266,7 @@ module tensorflowsui::model {
         // Get first layer to validate input dimensions
         assert!(graph::get_layer_count(graph) > 0, EInvalidModel);
         let first_layer = graph::get_layer_at(graph, 0);
-        let input_dim = graph::get_layer_in_dim(first_layer);
+        let input_dim = layer::get_in_dimension(first_layer);
         
         // Validate input dimensions
         assert!(vector::length(&input_magnitude) == input_dim, EInputDimensionMismatch);
@@ -272,7 +274,7 @@ module tensorflowsui::model {
         
         // Create input tensor (batch size 1)
         let input_shape = vector[1, input_dim];
-        let input_tensor = tensor::create_signed_fixed_tensor(
+        let input_tensor = tensor::new_tensor(
             input_shape,
             input_magnitude,
             input_sign,
@@ -286,15 +288,15 @@ module tensorflowsui::model {
         let mut i = 0;
         while (i < layer_count) {
             let layer = graph::get_layer_at(graph, i);
-            let weight_tensor = graph::get_weight_tensor(layer);
-            let bias_tensor = graph::get_bias_tensor(layer);
+            let weight_tensor = layer::get_weight_tensor(layer);
+            let bias_tensor = layer::get_bias_tensor(layer);
             
             // Apply activation function (ReLU for all layers except the last one)
             let activation_type = if (i == layer_count - 1) { 0 } else { 1 }; // 0=None, 1=ReLU
             
             // Apply layer computation
             // TODO: select computation function based on layer type (dense, conv, etc.)
-            current_tensor = graph::compute_dense_layer(
+            current_tensor = layer::compute_dense_layer(
                 &current_tensor,
                 weight_tensor,
                 bias_tensor,
@@ -374,7 +376,7 @@ module tensorflowsui::model {
         
         // Get the target layer
         let layer = graph::get_layer_at(graph, layer_idx);
-        let input_dim = graph::get_layer_in_dim(layer);
+        let input_dim = layer::get_in_dimension(layer);
         
         // Validate input dimensions
         assert!(vector::length(&input_magnitude) == input_dim, EInputDimensionMismatch);
@@ -382,7 +384,7 @@ module tensorflowsui::model {
         
         // Create input tensor (batch size 1)
         let input_shape = vector[1, input_dim];
-        let input_tensor = tensor::create_signed_fixed_tensor(
+        let input_tensor = tensor::new_tensor(
             input_shape,
             input_magnitude,
             input_sign,
@@ -390,14 +392,14 @@ module tensorflowsui::model {
         );
         
         // Get layer tensors
-        let weight_tensor = graph::get_weight_tensor(layer);
-        let bias_tensor = graph::get_bias_tensor(layer);
+        let weight_tensor = layer::get_weight_tensor(layer);
+        let bias_tensor = layer::get_bias_tensor(layer);
         
         // Apply activation function (ReLU for all layers except the last one)
         let activation_type = if (is_last_layer) { 0 } else { 1 }; // 0=None, 1=ReLU
         
         // Compute dense layer
-        let result_tensor = graph::compute_dense_layer(
+        let result_tensor = layer::compute_dense_layer(
             &input_tensor,
             weight_tensor,
             bias_tensor,
@@ -468,8 +470,8 @@ module tensorflowsui::model {
         
         // Get the target layer
         let layer = graph::get_layer_at(graph, layer_idx);
-        let input_dim = graph::get_layer_in_dim(layer);
-        let output_dim = graph::get_layer_out_dim(layer);
+        let input_dim = layer::get_in_dimension(layer);
+        let output_dim = layer::get_out_dimension(layer);
         
         // Validate output dimension index
         assert!(output_dim_idx < output_dim, EDimensionIndexOutOfBounds);
@@ -483,8 +485,8 @@ module tensorflowsui::model {
         let is_last_dimension = output_dim_idx == output_dim - 1;
         
         // Get weight and bias tensors
-        let weight_tensor = graph::get_weight_tensor(layer);
-        let bias_tensor = graph::get_bias_tensor(layer);
+        let weight_tensor = layer::get_weight_tensor(layer);
+        let bias_tensor = layer::get_bias_tensor(layer);
         
         // Extract weight and bias data
         let weight_mag = tensor::get_magnitude(weight_tensor);
@@ -522,7 +524,7 @@ module tensorflowsui::model {
                 let product_sign = input_sign_val ^ weight_sign_val; // XOR for sign multiplication
                 
                 // Apply scaling after multiplication
-                let scaled_product_mag = scale_up(product_mag, model.scale);
+                let scaled_product_mag = math::scale_up(product_mag, model.scale);
                 
                 // Add to result (considering signs)
                 if (result_sign == product_sign) {
@@ -582,20 +584,6 @@ module tensorflowsui::model {
         };
         
         (result_magnitudes, result_signs, output_dim_idx, is_last_dimension)
-    }
-    
-    /// @notice Helper function to scale up fixed-point values after multiplication
-    /// @param value Value to scale
-    /// @param scale Scale factor
-    /// @return Scaled value
-    fun scale_up(value: u64, scale: u64): u64 {
-        let mut scale_factor = 1;
-        let mut i = 0;
-        while (i < scale) {
-            scale_factor = scale_factor * 10;
-            i = i + 1;
-        };
-        value / scale_factor
     }
     
     /// @notice Event emitted when a partial layer computation is completed
