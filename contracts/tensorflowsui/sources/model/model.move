@@ -7,28 +7,16 @@ module tensorflowsui::model {
     use tensorflowsui::layer;
     use tensorflowsui::dataset;
     use tensorflowsui::math;
-    use std::string::{Self, String};
+    use std::string::{String};
     use tensorflowsui::tensor;
     use sui::event;
     
-    /// @dev Error when dimension pair does not match
-    const EDimensionPairMismatch: u64 = 1002;
-    /// @dev Error when weight magnitude vector does not match
-    const EWeightsMagnitudeMismatch: u64 = 1004;
-    /// @dev Error when weight sign vector does not match
-    const EWeightsSignMismatch: u64 = 1005;
-    /// @dev Error when bias magnitude vector does not match
-    const EBiasesMagnitudeMismatch: u64 = 1006;
-    /// @dev Error when bias sign vector does not match
-    const EBiasesSignMismatch: u64 = 1007;
     /// @dev Error when weight magnitude and sign vector lengths do not match
     const EWeightsVectorLengthMismatch: u64 = 1008;
     /// @dev Error when bias magnitude and sign vector lengths do not match
     const EBiasesVectorLengthMismatch: u64 = 1009;
     /// @dev Error when scale value is 0
     const EInvalidScale: u64 = 1010;
-    /// @dev Error when layer dimensions vector is empty
-    const ELayerDimensionsEmpty: u64 = 1011;
     /// @dev Error when input vector length does not match first layer input dimension
     const EInputDimensionMismatch: u64 = 1012;
     /// @dev Error when model object is invalid
@@ -39,7 +27,8 @@ module tensorflowsui::model {
     const ELayerIndexOutOfBounds: u64 = 1015;
     /// @dev Error when dimension index is out of bounds
     const EDimensionIndexOutOfBounds: u64 = 1016;
-
+    /// @dev Error when graph index is out of bounds
+    const EGraphIndexOutOfBounds: u64 = 1018;
 
     public struct Model has key {
         id: UID,
@@ -69,6 +58,35 @@ module tensorflowsui::model {
         argmax_idx: u64,
     }
 
+    /// @notice Event emitted when a model is created
+    public struct ModelCreated has copy, drop {
+        model_id: address,
+        name: String,
+        task_type: String,
+    }
+
+    /// @notice Event emitted when a model is completed
+    public struct ModelCompleted has copy, drop {
+        model_id: address,
+        graph_count: u64,
+        total_layers: u64,
+    }
+
+    /// @notice Event emitted when a graph is added to a model
+    public struct GraphAdded has copy, drop {
+        model_id: address,
+        graph_idx: u64,
+    }
+
+    /// @notice Event emitted when a layer is added to a graph
+    public struct LayerAdded has copy, drop {
+        model_id: address,
+        graph_idx: u64,
+        layer_idx: u64,
+        in_dimension: u64,
+        out_dimension: u64,
+    }
+
     public struct MODEL has drop {}
 
     public struct OpenGraphManagerCap has key {
@@ -84,46 +102,28 @@ module tensorflowsui::model {
         transfer::transfer(cap, tx_context::sender(ctx));
     }
 
-    /// @notice Custom model initialization function - creates a model with user provided data
+    /// @notice Creates an empty model with just metadata (no graphs or layers)
     /// @param name Model name
     /// @param description Model description
     /// @param task_type Model task type (e.g., "classification", "regression")
-    /// @param layer_dimensions List of [input_dim, output_dim] pairs for each layer
-    /// @param weights_magnitudes List of weight magnitudes for each layer
-    /// @param weights_signs List of weight signs for each layer
-    /// @param biases_magnitudes List of bias magnitudes for each layer
-    /// @param biases_signs List of bias signs for each layer
     /// @param scale Fixed point scale (2^scale)
     /// @param training_dataset_id Training dataset ID (optional)
     /// @param test_dataset_ids List of test dataset IDs (optional)
     /// @param ctx Transaction context
-    entry public fun new_model(
+    /// @return New model object ID
+    public fun create_model(
         name: String,
         description: String,
         task_type: String,
-        layer_dimensions: vector<vector<u64>>,
-        weights_magnitudes: vector<vector<u64>>,
-        weights_signs: vector<vector<u64>>,
-        biases_magnitudes: vector<vector<u64>>,
-        biases_signs: vector<vector<u64>>,
         scale: u64,
         training_dataset_id: Option<ID>,
         test_dataset_ids: Option<vector<ID>>,
         ctx: &mut TxContext,
-    ) {
+    ): Model {
         // Validate scale value
         assert!(scale > 0, EInvalidScale);
-        
-        let layer_count = vector::length(&layer_dimensions);
-        assert!(layer_count > 0, ELayerDimensionsEmpty);
-        
-        // Check if all vectors have same length
-        assert!(layer_count == vector::length(&weights_magnitudes), EWeightsMagnitudeMismatch);
-        assert!(layer_count == vector::length(&weights_signs), EWeightsSignMismatch);
-        assert!(layer_count == vector::length(&biases_magnitudes), EBiasesMagnitudeMismatch);
-        assert!(layer_count == vector::length(&biases_signs), EBiasesSignMismatch);
 
-        let mut model = Model {
+        let model = Model {
             id: object::new(ctx),
             name,
             description,
@@ -131,51 +131,101 @@ module tensorflowsui::model {
             graphs: vector::empty<Graph>(),
             scale,
             training_dataset_id,
-            test_dataset_ids,
+            test_dataset_ids
         };
+        
+        // Emit model created event
+        event::emit(ModelCreated {
+            model_id: object::id_address(&model),
+            name,
+            task_type,
+        });
+        
+        model
+    }
 
-        // NOTE(jarry): currently, we handle only one graph
+    /// @notice Adds a new empty graph to the model
+    /// @param model Model object to add graph to
+    /// @return Index of the newly added graph
+    public fun add_graph(model: &mut Model) {
         let graph = graph::new_graph();
         vector::push_back(&mut model.graphs, graph);
         
-        let mut layer_idx = 0;
-        while (layer_idx < layer_count) {
-            // Get layer dimensions
-            let dimension_pair = vector::borrow(&layer_dimensions, layer_idx);
-            assert!(vector::length(dimension_pair) == 2, EDimensionPairMismatch); // Make sure the dimension pair is [in_dim, out_dim]
-            
-            let in_dimension = *vector::borrow(dimension_pair, 0);
-            let out_dimension = *vector::borrow(dimension_pair, 1);
-            
-            // Validate weights and bias vector lengths
-            let weights_magnitude = vector::borrow(&weights_magnitudes, layer_idx);
-            let weights_sign = vector::borrow(&weights_signs, layer_idx);
-            let biases_magnitude = vector::borrow(&biases_magnitudes, layer_idx);
-            let biases_sign = vector::borrow(&biases_signs, layer_idx);
-            
-            assert!(vector::length(weights_magnitude) == vector::length(weights_sign), EWeightsVectorLengthMismatch);
-            assert!(vector::length(biases_magnitude) == vector::length(biases_sign), EBiasesVectorLengthMismatch);
-            assert!(vector::length(weights_magnitude) == in_dimension * out_dimension, EWeightsVectorLengthMismatch);
-            assert!(vector::length(biases_magnitude) == out_dimension, EBiasesVectorLengthMismatch);
-            
-            // Create layer and add to graph with user-provided weights and biases
-            let layer = layer::new_layer(
-                string::utf8(b"dense"), 
-                in_dimension, 
-                out_dimension, 
-                *weights_magnitude, 
-                *weights_sign, 
-                *biases_magnitude, 
-                *biases_sign, 
-                scale
-            );
-            graph::add_layer(&mut model.graphs[0], layer);
-            layer_idx = layer_idx + 1;
-        };
+        let graph_idx = vector::length(&model.graphs) - 1;
+        
+        // Emit graph added event
+        event::emit(GraphAdded {
+            model_id: object::id_address(model),
+            graph_idx,
+        });
+    }
+
+    /// @notice Adds a layer to a specified graph in the model
+    /// @param model Model object to add layer to
+    /// @param graph_idx Index of the graph to add layer to
+    /// @param layer_type Type of layer (e.g., "dense")
+    /// @param in_dimension Input dimension of the layer
+    /// @param out_dimension Output dimension of the layer
+    /// @param weights_magnitude Weight magnitude values
+    /// @param weights_sign Weight sign values
+    /// @param biases_magnitude Bias magnitude values
+    /// @param biases_sign Bias sign values
+    /// @return Index of the newly added layer
+    public fun add_layer(
+        model: &mut Model,
+        graph_idx: u64,
+        layer_type: String,
+        in_dimension: u64,
+        out_dimension: u64,
+        weights_magnitude: vector<u64>,
+        weights_sign: vector<u64>,
+        biases_magnitude: vector<u64>,
+        biases_sign: vector<u64>,
+    ) {
+        // Check if graph_idx is valid
+        assert!(graph_idx < vector::length(&model.graphs), EGraphIndexOutOfBounds);
+        
+        // Validate weights and bias vector lengths
+        assert!(vector::length(&weights_magnitude) == vector::length(&weights_sign), EWeightsVectorLengthMismatch);
+        assert!(vector::length(&biases_magnitude) == vector::length(&biases_sign), EBiasesVectorLengthMismatch);
+        assert!(vector::length(&weights_magnitude) == in_dimension * out_dimension, EWeightsVectorLengthMismatch);
+        assert!(vector::length(&biases_magnitude) == out_dimension, EBiasesVectorLengthMismatch);
+        
+        // Create layer and add to graph
+        let layer = layer::new_layer(
+            layer_type, 
+            in_dimension, 
+            out_dimension, 
+            weights_magnitude, 
+            weights_sign, 
+            biases_magnitude, 
+            biases_sign, 
+            model.scale
+        );
+        
+        graph::add_layer(&mut model.graphs[graph_idx], layer);
+        
+        let layer_idx = graph::get_layer_count(&model.graphs[graph_idx]) - 1;
+        
+        // Emit layer added event
+        event::emit(LayerAdded {
+            model_id: object::id_address(model),
+            graph_idx,
+            layer_idx,
+            in_dimension,
+            out_dimension,
+        });
+    }
+
+    public fun complete_model(model: Model) {
+        event::emit(ModelCompleted {
+            model_id: object::id_address(&model),
+            graph_count: vector::length(&model.graphs),
+            total_layers: get_total_layers(&model),
+        });
 
         transfer::share_object(model);
     }
-
 
     public fun delete_model(model: Model, _: &OpenGraphManagerCap) {
         let Model { id, .. } = model;
@@ -210,15 +260,38 @@ module tensorflowsui::model {
         model.scale
     }
 
+    /// @notice Calculate the total number of layers in the model
+    /// @param model Model object
+    /// @return Total number of layers in the model
+    fun get_total_layers(model: &Model): u64 {
+        let graph_count = vector::length(&model.graphs);
+        let mut total = 0;
+        
+        let mut i = 0;
+        while (i < graph_count) {
+            total = total + graph::get_layer_count(&model.graphs[i]);
+            i = i + 1;
+        };
+        
+        total
+    }
+
 
     /// Adds a test dataset to the model.
     public fun add_test_dataset(model: &mut Model, test_dataset: &dataset::Dataset) {
+        if (option::is_none(&model.test_dataset_ids)) {
+            model.test_dataset_ids = option::some(vector::empty<ID>());
+        };
         vector::push_back(option::borrow_mut(&mut model.test_dataset_ids), object::id(test_dataset));
     }
 
     /// Removes a test dataset from the model.
     /// Returns true if the dataset was found and removed, false otherwise.
     public fun remove_test_dataset(model: &mut Model, test_dataset_id: ID): bool {
+        if (option::is_none(&model.test_dataset_ids)) {
+            return false
+        };
+        
         let mut i = 0;
         let len = vector::length(option::borrow(&model.test_dataset_ids));
         while (i < len) {
@@ -238,12 +311,15 @@ module tensorflowsui::model {
     }
 
     /// Gets all test dataset IDs.
-    public fun get_test_dataset_ids(model: &Model): &vector<ID> {
-        option::borrow(&model.test_dataset_ids)
+    public fun get_test_dataset_ids(model: &Model): &Option<vector<ID>> {
+        &model.test_dataset_ids
     }
 
     /// Gets the number of test datasets.
     public fun get_test_dataset_count(model: &Model): u64 {
+        if (option::is_none(&model.test_dataset_ids)) {
+            return 0
+        };
         vector::length(option::borrow(&model.test_dataset_ids))
     }
 
