@@ -29,6 +29,19 @@ module tensorflowsui::model {
     const EDimensionIndexOutOfBounds: u64 = 1016;
     /// @dev Error when graph index is out of bounds
     const EGraphIndexOutOfBounds: u64 = 1018;
+    /// @dev Error when layer dimensions don't match parameters
+    const ELayerDimensionMismatch: u64 = 1020;
+    /// @dev Error when model state is invalid for operation
+    const EInvalidModelState: u64 = 1021;
+    /// @dev Error when partial layer parameters are invalid
+    const EInvalidPartialLayerParams: u64 = 1023;
+
+    // Model state constants
+    const MODEL_STATE_INCOMPLETE: u8 = 0;
+    const MODEL_STATE_COMPLETE: u8 = 1;
+
+    // Layer parameter constants
+    const MAX_PARAMS_PER_TRANSACTION: u64 = 3000;
 
     public struct Model has key {
         id: UID,
@@ -39,6 +52,9 @@ module tensorflowsui::model {
         scale: u64,
         training_dataset_id: Option<ID>,
         test_dataset_ids: Option<vector<ID>>,
+        state: u8, // 0 = incomplete, 1 = complete
+        current_graph_idx: u64, // tracks which graph is currently being constructed
+        current_layer_idx: u64, // tracks which layer is currently being constructed
     }
     
     /// @notice Event emitted when a layer computation is completed
@@ -131,7 +147,10 @@ module tensorflowsui::model {
             graphs: vector::empty<Graph>(),
             scale,
             training_dataset_id,
-            test_dataset_ids
+            test_dataset_ids,
+            state: MODEL_STATE_INCOMPLETE,
+            current_graph_idx: 0,
+            current_layer_idx: 0,
         };
         
         // Emit model created event
@@ -146,12 +165,18 @@ module tensorflowsui::model {
 
     /// @notice Adds a new empty graph to the model
     /// @param model Model object to add graph to
-    /// @return Index of the newly added graph
     public fun add_graph(model: &mut Model) {
+        // Model must be in incomplete state
+        assert!(model.state == MODEL_STATE_INCOMPLETE, EInvalidModelState);
+        
         let graph = graph::new_graph();
         vector::push_back(&mut model.graphs, graph);
         
         let graph_idx = vector::length(&model.graphs) - 1;
+        
+        // Update current graph index
+        model.current_graph_idx = graph_idx;
+        model.current_layer_idx = 0;
         
         // Emit graph added event
         event::emit(GraphAdded {
@@ -160,8 +185,194 @@ module tensorflowsui::model {
         });
     }
 
-    /// @notice Adds a layer to a specified graph in the model
-    /// @param model Model object to add layer to
+    /// @notice Starts creating a new layer in the current graph
+    /// @param model Model object
+    /// @param layer_type Type of layer (e.g., "dense")
+    /// @param in_dimension Input dimension of the layer
+    /// @param out_dimension Output dimension of the layer
+    public fun start_layer(
+        model: &mut Model,
+        layer_type: String,
+        in_dimension: u64,
+        out_dimension: u64
+    ) {
+        // Model must be in incomplete state
+        assert!(model.state == MODEL_STATE_INCOMPLETE, EInvalidModelState);
+        
+        // Check if graph_idx is valid
+        let graph_idx = model.current_graph_idx;
+        assert!(graph_idx < vector::length(&model.graphs), EGraphIndexOutOfBounds);
+        
+        // Create empty layer and add to graph
+        let empty_weights_mag = vector::empty<u64>();
+        let empty_weights_sign = vector::empty<u64>();
+        let empty_biases_mag = vector::empty<u64>();
+        let empty_biases_sign = vector::empty<u64>();
+        
+        let layer = layer::new_layer(
+            layer_type, 
+            in_dimension, 
+            out_dimension, 
+            empty_weights_mag, 
+            empty_weights_sign, 
+            empty_biases_mag, 
+            empty_biases_sign, 
+            model.scale
+        );
+        
+        graph::add_layer(&mut model.graphs[graph_idx], layer);
+        
+        // Update current layer index
+        model.current_layer_idx = graph::get_layer_count(&model.graphs[graph_idx]) - 1;
+        
+        // Emit layer started event
+        event::emit(LayerStarted {
+            model_id: object::id_address(model),
+            graph_idx,
+            layer_idx: model.current_layer_idx,
+            in_dimension,
+            out_dimension,
+        });
+    }
+
+    /// @notice Adds partial weights parameters to the current layer
+    /// @param model Model object
+    /// @param start_idx Starting index in the flattened weights array
+    /// @param weights_magnitude Partial weight magnitude values
+    /// @param weights_sign Partial weight sign values
+    /// @param is_last_chunk Whether this is the last chunk of weights
+    public fun add_weights_chunk(
+        model: &mut Model,
+        start_idx: u64,
+        weights_magnitude: vector<u64>,
+        weights_sign: vector<u64>,
+        is_last_chunk: bool
+    ) {
+        // Model must be in incomplete state
+        assert!(model.state == MODEL_STATE_INCOMPLETE, EInvalidModelState);
+        
+        // Check if vectors have same length
+        assert!(vector::length(&weights_magnitude) == vector::length(&weights_sign), EWeightsVectorLengthMismatch);
+        
+        // Get current graph and layer
+        let graph_idx = model.current_graph_idx;
+        let layer_idx = model.current_layer_idx;
+        
+        assert!(graph_idx < vector::length(&model.graphs), EGraphIndexOutOfBounds);
+        assert!(layer_idx < graph::get_layer_count(&model.graphs[graph_idx]), ELayerIndexOutOfBounds);
+        
+        // Get layer
+        let layer = graph::get_layer_at_mut(&mut model.graphs[graph_idx], layer_idx);
+        
+        // Add weights chunk
+        layer::add_weights_chunk(layer, start_idx, weights_magnitude, weights_sign);
+        
+        // Emit weights chunk added event
+        event::emit(WeightsChunkAdded {
+            model_id: object::id_address(model),
+            graph_idx,
+            layer_idx,
+            start_idx,
+            chunk_size: vector::length(&weights_magnitude),
+            is_last_chunk,
+        });
+    }
+
+    /// @notice Adds partial biases parameters to the current layer
+    /// @param model Model object
+    /// @param start_idx Starting index in the biases array
+    /// @param biases_magnitude Partial bias magnitude values
+    /// @param biases_sign Partial bias sign values
+    /// @param is_last_chunk Whether this is the last chunk of biases
+    public fun add_biases_chunk(
+        model: &mut Model,
+        start_idx: u64,
+        biases_magnitude: vector<u64>,
+        biases_sign: vector<u64>,
+        is_last_chunk: bool
+    ) {
+        // Model must be in incomplete state
+        assert!(model.state == MODEL_STATE_INCOMPLETE, EInvalidModelState);
+        
+        // Check if vectors have same length
+        assert!(vector::length(&biases_magnitude) == vector::length(&biases_sign), EBiasesVectorLengthMismatch);
+        
+        // Get current graph and layer
+        let graph_idx = model.current_graph_idx;
+        let layer_idx = model.current_layer_idx;
+        
+        assert!(graph_idx < vector::length(&model.graphs), EGraphIndexOutOfBounds);
+        assert!(layer_idx < graph::get_layer_count(&model.graphs[graph_idx]), ELayerIndexOutOfBounds);
+        
+        // Get layer
+        let layer = graph::get_layer_at_mut(&mut model.graphs[graph_idx], layer_idx);
+        
+        // Add biases chunk
+        layer::add_biases_chunk(layer, start_idx, biases_magnitude, biases_sign);
+        
+        // Emit biases chunk added event
+        event::emit(BiasesChunkAdded {
+            model_id: object::id_address(model),
+            graph_idx,
+            layer_idx,
+            start_idx,
+            chunk_size: vector::length(&biases_magnitude),
+            is_last_chunk,
+        });
+    }
+
+    /// @notice Completes the current layer by validating parameter dimensions
+    /// @param model Model object
+    public fun complete_layer(model: &mut Model, is_final_layer: bool) {
+        // Model must be in incomplete state
+        assert!(model.state == MODEL_STATE_INCOMPLETE, EInvalidModelState);
+        
+        // Get current graph and layer
+        let graph_idx = model.current_graph_idx;
+        let layer_idx = model.current_layer_idx;
+        
+        assert!(graph_idx < vector::length(&model.graphs), EGraphIndexOutOfBounds);
+        assert!(layer_idx < graph::get_layer_count(&model.graphs[graph_idx]), ELayerIndexOutOfBounds);
+        
+        // Get layer
+        let layer = graph::get_layer_at(&model.graphs[graph_idx], layer_idx);
+        
+        // Validate layer parameters
+        let in_dim = layer::get_in_dimension(layer);
+        let out_dim = layer::get_out_dimension(layer);
+        
+        // Get layer tensors
+        let weight_tensor = layer::get_weight_tensor(layer);
+        let bias_tensor = layer::get_bias_tensor(layer);
+        
+        // Validate weights and biases dimensions
+        let weight_mag = tensor::get_magnitude(weight_tensor);
+        let weight_sign = tensor::get_sign(weight_tensor);
+        assert!(vector::length(&weight_mag) == in_dim * out_dim, ELayerDimensionMismatch);
+        assert!(vector::length(&weight_sign) == in_dim * out_dim, ELayerDimensionMismatch);
+        
+        let bias_mag = tensor::get_magnitude(bias_tensor);
+        let bias_sign = tensor::get_sign(bias_tensor);
+        assert!(vector::length(&bias_mag) == out_dim, ELayerDimensionMismatch);
+        assert!(vector::length(&bias_sign) == out_dim, ELayerDimensionMismatch);
+        
+        // Emit layer completed event
+        event::emit(LayerCompleted {
+            model_id: object::id_address(model),
+            graph_idx,
+            layer_idx,
+            in_dimension: in_dim,
+            out_dimension: out_dim,
+            is_final_layer,
+        });
+
+        if (is_final_layer) {
+            model.state = MODEL_STATE_COMPLETE;
+        };
+    }
+
+    /// @notice Traditional single-transaction layer addition (for layers with parameters under the limit)
+    /// @param model Model object
     /// @param graph_idx Index of the graph to add layer to
     /// @param layer_type Type of layer (e.g., "dense")
     /// @param in_dimension Input dimension of the layer
@@ -185,11 +396,18 @@ module tensorflowsui::model {
         // Check if graph_idx is valid
         assert!(graph_idx < vector::length(&model.graphs), EGraphIndexOutOfBounds);
         
+        // Update current indices
+        model.current_graph_idx = graph_idx;
+        
         // Validate weights and bias vector lengths
         assert!(vector::length(&weights_magnitude) == vector::length(&weights_sign), EWeightsVectorLengthMismatch);
         assert!(vector::length(&biases_magnitude) == vector::length(&biases_sign), EBiasesVectorLengthMismatch);
-        assert!(vector::length(&weights_magnitude) == in_dimension * out_dimension, EWeightsVectorLengthMismatch);
-        assert!(vector::length(&biases_magnitude) == out_dimension, EBiasesVectorLengthMismatch);
+        assert!(vector::length(&weights_magnitude) == in_dimension * out_dimension, ELayerDimensionMismatch);
+        assert!(vector::length(&biases_magnitude) == out_dimension, ELayerDimensionMismatch);
+        
+        // Verify we're under parameter limit for a single transaction
+        let total_params = vector::length(&weights_magnitude) + vector::length(&weights_sign) + vector::length(&biases_magnitude) + vector::length(&biases_sign);
+        assert!(total_params <= MAX_PARAMS_PER_TRANSACTION, EInvalidPartialLayerParams);
         
         // Create layer and add to graph
         let layer = layer::new_layer(
@@ -205,19 +423,23 @@ module tensorflowsui::model {
         
         graph::add_layer(&mut model.graphs[graph_idx], layer);
         
-        let layer_idx = graph::get_layer_count(&model.graphs[graph_idx]) - 1;
+        // Update current layer index
+        model.current_layer_idx = graph::get_layer_count(&model.graphs[graph_idx]) - 1;
         
         // Emit layer added event
         event::emit(LayerAdded {
             model_id: object::id_address(model),
             graph_idx,
-            layer_idx,
+            layer_idx: model.current_layer_idx,
             in_dimension,
             out_dimension,
         });
     }
 
     public fun complete_model(model: Model) {
+        assert!(model.state == MODEL_STATE_INCOMPLETE, EInvalidModelState);
+        validate_model(&model);
+
         event::emit(ModelCompleted {
             model_id: object::id_address(&model),
             graph_count: vector::length(&model.graphs),
@@ -670,6 +892,116 @@ module tensorflowsui::model {
         output_magnitude: u64,
         output_sign: u64,
         is_last_dimension: bool
+    }
+
+    /// @notice Validates the model structure before completion
+    /// @param model Model to validate
+    fun validate_model(model: &Model) {
+        // Check if model has at least one graph
+        assert!(vector::length(&model.graphs) > 0, EModelHasNoGraphs);
+        
+        let graph_count = vector::length(&model.graphs);
+        let mut graph_idx = 0;
+        
+        while (graph_idx < graph_count) {
+            let graph = vector::borrow(&model.graphs, graph_idx);
+            
+            // Check that graph has at least one layer
+            let layer_count = graph::get_layer_count(graph);
+            assert!(layer_count > 0, EInvalidModel);
+            
+            // Validate layer connections (output dim of layer i = input dim of layer i+1)
+            let mut layer_idx = 0;
+            while (layer_idx < layer_count - 1) {
+                let current_layer = graph::get_layer_at(graph, layer_idx);
+                let next_layer = graph::get_layer_at(graph, layer_idx + 1);
+                
+                assert!(
+                    layer::get_out_dimension(current_layer) == layer::get_in_dimension(next_layer),
+                    ELayerDimensionMismatch
+                );
+                
+                layer_idx = layer_idx + 1;
+            };
+            
+            // Validate all layers' parameters
+            layer_idx = 0;
+            while (layer_idx < layer_count) {
+                let layer = graph::get_layer_at(graph, layer_idx);
+                
+                let in_dim = layer::get_in_dimension(layer);
+                let out_dim = layer::get_out_dimension(layer);
+                
+                let weight_tensor = layer::get_weight_tensor(layer);
+                let bias_tensor = layer::get_bias_tensor(layer);
+                
+                // Validate tensor dimensions
+                let weight_mag = tensor::get_magnitude(weight_tensor);
+                let weight_sign = tensor::get_sign(weight_tensor);
+                let bias_mag = tensor::get_magnitude(bias_tensor);
+                let bias_sign = tensor::get_sign(bias_tensor);
+                
+                assert!(
+                    vector::length(&weight_mag) == in_dim * out_dim,
+                    ELayerDimensionMismatch
+                );
+                assert!(
+                    vector::length(&weight_sign) == in_dim * out_dim,
+                    ELayerDimensionMismatch
+                );
+                assert!(
+                    vector::length(&bias_mag) == out_dim,
+                    ELayerDimensionMismatch
+                );
+                assert!(
+                    vector::length(&bias_sign) == out_dim,
+                    ELayerDimensionMismatch
+                );
+                
+                layer_idx = layer_idx + 1;
+            };
+            
+            graph_idx = graph_idx + 1;
+        }
+    }
+
+    /// @notice Event emitted when a layer creation starts
+    public struct LayerStarted has copy, drop {
+        model_id: address,
+        graph_idx: u64,
+        layer_idx: u64,
+        in_dimension: u64,
+        out_dimension: u64,
+    }
+
+    /// @notice Event emitted when a layer is completed
+    public struct LayerCompleted has copy, drop {
+        model_id: address,
+        graph_idx: u64,
+        layer_idx: u64,
+        in_dimension: u64,
+        out_dimension: u64,
+        is_final_layer: bool,
+    }
+
+    /// @notice Event emitted when a weights chunk is added
+    public struct WeightsChunkAdded has copy, drop {
+        model_id: address,
+        graph_idx: u64,
+        layer_idx: u64,
+        start_idx: u64,
+        chunk_size: u64,
+        is_last_chunk: bool,
+    }
+
+    /// @notice Event emitted when a biases chunk is added
+    public struct BiasesChunkAdded has copy, drop {
+        model_id: address,
+        graph_idx: u64,
+        layer_idx: u64,
+        start_idx: u64,
+        chunk_size: u64,
+        is_last_chunk: bool,
     }
 
 }

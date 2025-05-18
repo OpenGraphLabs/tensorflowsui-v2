@@ -13,6 +13,10 @@ module tensorflowsui::graph {
         vector::borrow(&graph.layers, idx)
     }
 
+    public fun get_layer_at_mut(graph: &mut Graph, idx: u64): &mut layer::Layer {
+        vector::borrow_mut(&mut graph.layers, idx)
+    }
+
     public fun get_layer_count(graph: &Graph): u64 {
         vector::length(&graph.layers)
     }

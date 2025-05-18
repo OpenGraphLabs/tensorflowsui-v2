@@ -12,13 +12,37 @@ module tensorflowsui::tensor {
         scale : u64,
     }
 
-    public fun new_tensor(shape: vector<u64> , magnitude: vector<u64>, sign: vector<u64>, scale: u64): Tensor {
-        let _count = num_elements(&shape);
+    /// Initialize an empty vector with zeros to the specified length
+    fun init_zero_vector(length: u64): vector<u64> {
+        let mut result = vector::empty<u64>();
+        let mut i = 0;
+        while (i < length) {
+            vector::push_back(&mut result, 0);
+            i = i + 1;
+        };
+        result
+    }
+
+    public fun new_tensor(shape: vector<u64>, magnitude: vector<u64>, sign: vector<u64>, scale: u64): Tensor {
+        let total_elements = num_elements(&shape);
+        
+        // Defense logic: Initialize vectors if empty or incorrectly sized
+        let mag = if (vector::is_empty(&magnitude)) {
+            init_zero_vector(total_elements)
+        } else {
+            magnitude
+        };
+        
+        let sgn = if (vector::is_empty(&sign)) {
+            init_zero_vector(total_elements)
+        } else {
+            sign
+        };
         
         Tensor {
             shape,
-            magnitude,
-            sign,
+            magnitude: mag,
+            sign: sgn,
             scale
         }
     }
@@ -48,6 +72,50 @@ module tensorflowsui::tensor {
 
     public fun get_sign(t: &Tensor): vector<u64> {
         t.sign
+    }
+
+    /// @notice Updates tensor values starting at a specific index
+    /// @param tensor Tensor to update
+    /// @param start_idx Starting index in the flattened tensor array
+    /// @param new_magnitudes New magnitude values to update
+    /// @param new_signs New sign values to update
+    public fun update_values(
+        tensor: &mut Tensor,
+        start_idx: u64,
+        new_magnitudes: vector<u64>,
+        new_signs: vector<u64>
+    ) {
+        let total_elements = num_elements(&tensor.shape);
+        let new_values_count = vector::length(&new_magnitudes);
+        let mag_length = vector::length(&tensor.magnitude);
+        let sign_length = vector::length(&tensor.sign);
+        
+        // Safety check: ensure tensor vectors have correct sizes
+        assert!(mag_length == total_elements, 2004); // Tensor magnitude vector size mismatch
+        assert!(sign_length == total_elements, 2005); // Tensor sign vector size mismatch
+        
+        // Validate parameters
+        assert!(start_idx < total_elements, 2001); // Invalid start index
+        assert!(start_idx + new_values_count <= total_elements, 2002); // Update exceeds tensor size
+        assert!(vector::length(&new_magnitudes) == vector::length(&new_signs), 2003); // Magnitude and sign vectors must have same length
+        
+        // Update values
+        let mut i = 0;
+        while (i < new_values_count) {
+            let tensor_idx = start_idx + i;
+            
+            // Safety check: ensure index is in bounds
+            assert!(tensor_idx < mag_length, 2006); // Index out of bounds for magnitude
+            assert!(tensor_idx < sign_length, 2007); // Index out of bounds for sign
+            
+            // Update magnitude
+            *vector::borrow_mut(&mut tensor.magnitude, tensor_idx) = *vector::borrow(&new_magnitudes, i);
+            
+            // Update sign
+            *vector::borrow_mut(&mut tensor.sign, tensor_idx) = *vector::borrow(&new_signs, i);
+            
+            i = i + 1;
+        };
     }
 
     fun reverse_bytes(buf: &mut vector<u8>) {
@@ -113,7 +181,7 @@ module tensorflowsui::tensor {
             x = x / 10;
         };
 
-        reverse_bytes(&mut digits); // 아래 함수
+        reverse_bytes(&mut digits); // reverse the digit order
 
         digits
     }
