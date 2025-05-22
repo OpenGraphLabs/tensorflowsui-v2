@@ -68,6 +68,9 @@ module tensorflowsui::dataset {
       // to verify its integrity.
       blob_hash: String,
 
+      // The type of the data in the dataset
+      data_type: String,
+
       // Defines the byte range of the resource contents
       // in the case where multiple resources are stored
       // in the same blob. This way, each resource will
@@ -163,6 +166,7 @@ module tensorflowsui::dataset {
       path: String,
       blob_id: String,
       blob_hash: String,
+      data_type: String,
       range: Option<Range>,
   ): Data {
       Data {
@@ -170,6 +174,7 @@ module tensorflowsui::dataset {
           annotations: vector[],
           blob_id,
           blob_hash,
+          data_type,
           range,
       }
   }
