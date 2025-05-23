@@ -183,6 +183,16 @@ module tensorflowsui::dataset {
   public fun add_annotation_label(data: &mut Data, label: String) {
     data.annotations.push_back(Annotation { label });
   }
+
+  public fun add_annotation_labels(dataset: &mut Dataset, path: String, labels: vector<String>) {
+    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
+    let mut i = 0;
+    while (i < vector::length(&labels)) {
+      data.annotations.push_back(Annotation { label: *vector::borrow(&labels, i) });
+      i = i + 1;
+    }
+  }
+
   /// TODO: Add a function to remove an annotation label from a data.
 
   /// Creates a new data path.
