@@ -5,6 +5,7 @@ module tensorflowsui::dataset {
   use std::string::{Self, String};
   use sui::display::{Self, Display};
   use sui::package::{Self, Publisher};
+  use sui::vec_map::{Self, VecMap};
   use tensorflowsui::metadata;
   use sui::event;
   use sui::dynamic_field;
@@ -58,9 +59,6 @@ module tensorflowsui::dataset {
   public struct Data has drop, store {
       path: String,
 
-      // Annotations of the data
-      annotations: vector<Annotation>,
-
       // The walrus blob id containing the bytes for this resource.
       blob_id: String,
 
@@ -76,10 +74,16 @@ module tensorflowsui::dataset {
       // in the same blob. This way, each resource will
       // be parsed using its' byte range in the blob.
       range: Option<Range>,
+
+      // Pending annotation statistics (label -> count)
+      pending_annotation_stats: VecMap<String, u64>,
+
+      // Confirmed annotations after validation
+      confirmed_annotations: vector<Annotation>,
   }
 
   /// An annotation for a data in a dataset.
-  public struct Annotation has drop, store {
+  public struct Annotation has copy, drop, store {
     // label of the annotation
     label: String,
   }
@@ -93,6 +97,10 @@ module tensorflowsui::dataset {
   /// Ensures there are no namespace collisions in the dynamic fields.
   public struct DataPath has copy, drop, store {
       path: String,
+  }
+
+  fun new_data_path(path: String): DataPath {
+    DataPath { path }
   }
 
   /// One-Time-Witness for the module.
@@ -161,45 +169,6 @@ module tensorflowsui::dataset {
       }
   }
 
-  /// Creates a new Data object.
-  public fun new_data(
-      path: String,
-      blob_id: String,
-      blob_hash: String,
-      data_type: String,
-      range: Option<Range>,
-  ): Data {
-      Data {
-          path,
-          annotations: vector[],
-          blob_id,
-          blob_hash,
-          data_type,
-          range,
-      }
-  }
-
-  /// Adds an annotation label to a data.
-  public fun add_annotation_label(data: &mut Data, label: String) {
-    data.annotations.push_back(Annotation { label });
-  }
-
-  public fun add_annotation_labels(dataset: &mut Dataset, path: String, labels: vector<String>) {
-    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
-    let mut i = 0;
-    while (i < vector::length(&labels)) {
-      data.annotations.push_back(Annotation { label: *vector::borrow(&labels, i) });
-      i = i + 1;
-    }
-  }
-
-  /// TODO: Add a function to remove an annotation label from a data.
-
-  /// Creates a new data path.
-  fun new_data_path(path: String): DataPath {
-    DataPath { path }
-  }
-
   /// Updates the name of a dataset.
   public fun update_name(dataset: &mut Dataset, new_name: String) {
     dataset.name = new_name
@@ -211,6 +180,25 @@ module tensorflowsui::dataset {
     dataset.data_type = metadata::data_type(&metadata);
     dataset.data_size = metadata::data_size(&metadata);
     dataset.creator = metadata::creator(&metadata);
+  }
+
+  /// Creates a new Data object.
+  public fun new_data(
+      path: String,
+      blob_id: String,
+      blob_hash: String,
+      data_type: String,
+      range: Option<Range>,
+  ): Data {
+      Data {
+          path,
+          blob_id,
+          blob_hash,
+          data_type,
+          range,
+          pending_annotation_stats: vec_map::empty<String, u64>(),
+          confirmed_annotations: vector[],
+      }
   }
 
   /// Adds a data to an existing dataset.
@@ -238,6 +226,41 @@ module tensorflowsui::dataset {
     let mut data = remove_data(dataset, old_path);
     data.path = new_path;
     add_data(dataset, data);
+  }
+
+  /// Adds a confirmed annotation to a specific data in dataset
+  public fun add_confirmed_annotation(dataset: &mut Dataset, path: String, label: String) {
+    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
+    data.confirmed_annotations.push_back(Annotation { label });
+  }
+
+  /// Adds multiple confirmed annotations to a specific data in dataset
+  public fun add_confirmed_annotations(dataset: &mut Dataset, path: String, labels: vector<String>) {
+    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
+    let mut i = 0;
+    while (i < vector::length(&labels)) {
+      data.confirmed_annotations.push_back(Annotation { label: *vector::borrow(&labels, i) });
+      i = i + 1;
+    }
+  }
+
+  /// Adds a pending annotation (user-submitted, not yet validated)
+  public fun add_pending_annotation(dataset: &mut Dataset, path: String, label: String, _ctx: &mut TxContext) {
+    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
+    
+    // Increment the count for this label
+    if (vec_map::contains(&data.pending_annotation_stats, &label)) {
+      let current_count = vec_map::get_mut(&mut data.pending_annotation_stats, &label);
+      *current_count = *current_count + 1;
+    } else {
+      vec_map::insert(&mut data.pending_annotation_stats, label, 1);
+    }
+  }
+
+  /// Validates pending annotations and promotes them to confirmed annotations
+  public fun validate_annotations(dataset: &mut Dataset, path: String, labels_to_confirm: vector<String>) {
+    // Add confirmed annotations
+    add_confirmed_annotations(dataset, path, labels_to_confirm);
   }
 
   /// Deletes a dataset object.
@@ -314,5 +337,51 @@ module tensorflowsui::dataset {
 
   public fun get_dataset_license(dataset: &Dataset): String {
     dataset.license
+  }
+
+  /// Gets confirmed annotations for a data path
+  public fun get_confirmed_annotations(dataset: &Dataset, path: String): vector<Annotation> {
+    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
+    data.confirmed_annotations
+  }
+
+  /// Checks if confirmed annotations exist for a data path
+  public fun has_confirmed_annotations(dataset: &Dataset, path: String): bool {
+    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
+    !vector::is_empty(&data.confirmed_annotations)
+  }
+
+  /// Gets the count of a specific pending annotation label
+  public fun get_pending_annotation_count(dataset: &Dataset, path: String, label: String): u64 {
+    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
+    if (vec_map::contains(&data.pending_annotation_stats, &label)) {
+      *vec_map::get(&data.pending_annotation_stats, &label)
+    } else {
+      0
+    }
+  }
+
+  /// Gets the total number of unique pending annotation labels for a data path
+  public fun get_total_pending_annotation_types(dataset: &Dataset, path: String): u64 {
+    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
+    vec_map::size(&data.pending_annotation_stats)
+  }
+
+  /// Gets all pending annotation labels and their counts
+  public fun get_all_pending_annotations(dataset: &Dataset, path: String): vector<String> {
+    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
+    vec_map::keys(&data.pending_annotation_stats)
+  }
+
+  /// Checks if pending annotation statistics exist for a data path
+  public fun has_pending_annotation_stats(dataset: &Dataset, path: String): bool {
+    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
+    !vec_map::is_empty(&data.pending_annotation_stats)
+  }
+
+  /// Clears all pending annotation statistics for a data path (after validation)
+  public fun clear_pending_annotation_stats(dataset: &mut Dataset, path: String) {
+    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
+    data.pending_annotation_stats = vec_map::empty<String, u64>();
   }
 }
