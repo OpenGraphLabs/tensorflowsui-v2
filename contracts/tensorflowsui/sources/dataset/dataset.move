@@ -15,6 +15,7 @@ module tensorflowsui::dataset {
   /// Error codes
   const EStartAndEndRangeAreNone: u64 = 0;
   const ERangeStartGreaterThanRangeEnd: u64 = 1;
+  const EInvalidBatchSize: u64 = 2;
 
   /// Event emitted when a new dataset is created.
   public struct DatasetCreated has copy, drop {
@@ -254,6 +255,37 @@ module tensorflowsui::dataset {
       *current_count = *current_count + 1;
     } else {
       vec_map::insert(&mut data.pending_annotation_stats, label, 1);
+    }
+  }
+
+  /// Adds pending annotations in batch using two vectors (paths and labels must have same length)
+  public fun batch_add_pending_annotations(
+    dataset: &mut Dataset, 
+    paths: vector<String>, 
+    labels: vector<String>, 
+    _ctx: &mut TxContext
+  ) {
+    // Ensure both vectors have the same length
+    assert!(vector::length(&paths) == vector::length(&labels), EInvalidBatchSize);
+    
+    let mut i = 0;
+    let len = vector::length(&paths);
+    
+    while (i < len) {
+      let path = *vector::borrow(&paths, i);
+      let label = *vector::borrow(&labels, i);
+      
+      let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
+      
+      // Increment the count for this label
+      if (vec_map::contains(&data.pending_annotation_stats, &label)) {
+        let current_count = vec_map::get_mut(&mut data.pending_annotation_stats, &label);
+        *current_count = *current_count + 1;
+      } else {
+        vec_map::insert(&mut data.pending_annotation_stats, label, 1);
+      };
+      
+      i = i + 1;
     }
   }
 
