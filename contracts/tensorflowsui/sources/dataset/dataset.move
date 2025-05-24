@@ -50,6 +50,8 @@ module tensorflowsui::dataset {
       data_type: String,
       // size of the data in the dataset
       data_size: u64,
+      // number of data in the dataset
+      data_count: u64,
       // creator of the dataset
       creator: Option<String>,
       // license of the dataset
@@ -127,6 +129,7 @@ module tensorflowsui::dataset {
         description: metadata::description(&metadata),
         data_type: metadata::data_type(&metadata),
         data_size: metadata::data_size(&metadata),
+        data_count: metadata::data_count(&metadata),
         creator: metadata::creator(&metadata),
         license: license,
         tags: metadata::tags(&metadata),

@@ -10,6 +10,7 @@ module tensorflowsui::metadata {
         tags: Option<vector<String>>,
         data_type: String,
         data_size: u64,
+        data_count: u64,
         creator: Option<String>,
         license: Option<String>,
     }
@@ -19,6 +20,7 @@ module tensorflowsui::metadata {
         description: Option<String>,
         data_type: String,
         data_size: u64,
+        data_count: u64,
         creator: Option<String>,
         license: Option<String>,
         tags: Option<vector<String>>,
@@ -27,6 +29,7 @@ module tensorflowsui::metadata {
             description,
             data_type,
             data_size,
+            data_count,
             creator,
             license,
             tags,
@@ -48,6 +51,10 @@ module tensorflowsui::metadata {
 
     public fun data_size(metadata: &Metadata): u64 {
         metadata.data_size
+    }
+
+    public fun data_count(metadata: &Metadata): u64 {
+        metadata.data_count
     }
 
     public fun creator(metadata: &Metadata): Option<String> {
