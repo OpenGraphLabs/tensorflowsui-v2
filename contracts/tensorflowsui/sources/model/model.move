@@ -158,16 +158,16 @@ module tensorflowsui::model {
 
     public struct MODEL has drop {}
 
-    public struct OpenGraphManagerCap has key {
+    public struct ModelManagerCap has key {
         id: UID
     }
 
-    public fun new_open_graph_manager_cap(_witness: MODEL, ctx: &mut TxContext): OpenGraphManagerCap {
-        OpenGraphManagerCap { id: object::new(ctx) }        
+    public fun new_model_manager_cap(_witness: MODEL, ctx: &mut TxContext): ModelManagerCap {
+        ModelManagerCap { id: object::new(ctx) }        
     }
 
     fun init(witness: MODEL, ctx: &mut TxContext) {
-        let cap = new_open_graph_manager_cap(witness, ctx);
+        let cap = new_model_manager_cap(witness, ctx);
         transfer::transfer(cap, tx_context::sender(ctx));
     }
 
@@ -501,7 +501,7 @@ module tensorflowsui::model {
         transfer::share_object(model);
     }
 
-    public fun delete_model(model: Model, _: &OpenGraphManagerCap) {
+    public fun delete_model(model: Model, _: &ModelManagerCap) {
         let Model { id, .. } = model;
         id.delete();
     }

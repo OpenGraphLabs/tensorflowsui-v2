@@ -7,6 +7,7 @@ module tensorflowsui::dataset {
   use sui::package::{Self, Publisher};
   use sui::vec_map::{Self, VecMap};
   use tensorflowsui::metadata;
+  use tensorflowsui::allowlist;
   use sui::event;
   use sui::dynamic_field;
 
@@ -16,7 +17,7 @@ module tensorflowsui::dataset {
   const EStartAndEndRangeAreNone: u64 = 0;
   const ERangeStartGreaterThanRangeEnd: u64 = 1;
   const EInvalidBatchSize: u64 = 2;
-
+  
   /// Event emitted when a new dataset is created.
   public struct DatasetCreated has copy, drop {
     dataset_id: ID,
@@ -92,8 +93,7 @@ module tensorflowsui::dataset {
   }
 
   public struct Range has drop, store {
-      start: Option<u64>, // inclusive lower bound
-      end: Option<u64>, // exclusive upper bound
+    range: vector<u8>,
   }
 
   /// Representation of the data path.
@@ -137,41 +137,48 @@ module tensorflowsui::dataset {
     emit_dataset_created(
         object::id(&dataset),
     );
-    
+
+    allowlist::new_allowlist(object::id(&dataset), ctx);
+
     dataset
   }
 
   /// Optionally creates a new Range object.
-  public fun new_range_option(range_start: Option<u64>, range_end: Option<u64>): Option<Range> {
-      if (range_start.is_none() && range_end.is_none()) {
-          return option::none<Range>()
-      };
-      option::some(new_range(range_start, range_end))
+  public fun new_range_option(encrypted_range: vector<u8>): Option<Range> {
+    option::some(Range { range: encrypted_range })
   }
 
-  /// Creates a new Range object.
-  ///
-  /// Aborts if both range_start and range_end are none.
-  /// Aborts if the range_start is greater than the range_end.
-  public fun new_range(range_start: Option<u64>, range_end: Option<u64>): Range {
-      let start_is_defined = range_start.is_some();
-      let end_is_defined = range_end.is_some();
+  // /// Optionally creates a new Range object.
+  // public fun new_range_option(range_start: Option<u64>, range_end: Option<u64>): Option<Range> {
+  //     if (range_start.is_none() && range_end.is_none()) {
+  //         return option::none<Range>()
+  //     };
+  //     option::some(new_range(range_start, range_end))
+  // }
 
-      // At least one of the range bounds should be defined.
-      assert!(start_is_defined || end_is_defined, EStartAndEndRangeAreNone);
+  // /// Creates a new Range object.
+  // ///
+  // /// Aborts if both range_start and range_end are none.
+  // /// Aborts if the range_start is greater than the range_end.
+  // public fun new_range(range_start: Option<u64>, range_end: Option<u64>): Range {
+  //     let start_is_defined = range_start.is_some();
+  //     let end_is_defined = range_end.is_some();
 
-      // If both range bounds are defined, the upper bound should be greater than the lower.
-      if (start_is_defined && end_is_defined) {
-          let start = option::borrow(&range_start);
-          let end = option::borrow(&range_end);
-          assert!(*end > *start, ERangeStartGreaterThanRangeEnd);
-      };
+  //     // At least one of the range bounds should be defined.
+  //     assert!(start_is_defined || end_is_defined, EStartAndEndRangeAreNone);
 
-      Range {
-          start: range_start,
-          end: range_end,
-      }
-  }
+  //     // If both range bounds are defined, the upper bound should be greater than the lower.
+  //     if (start_is_defined && end_is_defined) {
+  //         let start = option::borrow(&range_start);
+  //         let end = option::borrow(&range_end);
+  //         assert!(*end > *start, ERangeStartGreaterThanRangeEnd);
+  //     };
+
+  //     Range {
+  //         start: range_start,
+  //         end: range_end,
+  //     }
+  // }
 
   /// Updates the name of a dataset.
   public fun update_name(dataset: &mut Dataset, new_name: String) {
