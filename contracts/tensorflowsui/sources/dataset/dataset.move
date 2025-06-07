@@ -771,7 +771,7 @@ module tensorflowsui::dataset {
   }
 
   /// Gets all pending label annotations and their annotators
-  public fun get_all_pending_label_stats(dataset: &Dataset, path: String): (vector<String>, vector<vector<address>>) {
+  public fun get_all_pending_label_annotations(dataset: &Dataset, path: String): (vector<String>, vector<vector<address>>) {
     let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
     let labels = vec_map::keys(&data.pending_label_stats);
     let mut annotators = vector::empty<vector<address>>();
@@ -785,7 +785,7 @@ module tensorflowsui::dataset {
   }
 
   /// Gets all pending bounding box annotations and their annotators
-  public fun get_all_pending_bbox_stats(dataset: &Dataset, path: String): (vector<vector<u64>>, vector<vector<address>>) {
+  public fun get_all_pending_bbox_annotations(dataset: &Dataset, path: String): (vector<vector<u64>>, vector<vector<address>>) {
     let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
     let coords = vec_map::keys(&data.pending_bbox_stats);
     let mut annotators = vector::empty<vector<address>>();
@@ -799,7 +799,7 @@ module tensorflowsui::dataset {
   }
 
   /// Gets all pending skeleton annotations and their annotators
-  public fun get_all_pending_skeleton_stats(dataset: &Dataset, path: String): (vector<vector<u64>>, vector<vector<address>>) {
+  public fun get_all_pending_skeleton_annotations(dataset: &Dataset, path: String): (vector<vector<u64>>, vector<vector<address>>) {
     let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
     let flat_data = vec_map::keys(&data.pending_skeleton_stats);
     let mut annotators = vector::empty<vector<address>>();
@@ -819,4 +819,143 @@ module tensorflowsui::dataset {
     data.pending_bbox_stats = vec_map::empty<vector<u64>, vector<address>>();
     data.pending_skeleton_stats = vec_map::empty<vector<u64>, vector<address>>();
   }
+
+  /// Validates pending bounding box annotations and confirms them if they meet the validation criteria
+  public fun validate_bbox_annotations(dataset: &mut Dataset, path: String, x1: u64, y1: u64, x2: u64, y2: u64, ctx: &mut TxContext) {
+    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
+    let sender = tx_context::sender(ctx);
+    let coords = vector[x1, y1, x2, y2];
+    
+    // Check if there are any pending annotations for this bbox
+    assert!(vec_map::contains(&data.pending_bbox_stats, &coords), ERROR_NO_PENDING_ANNOTATIONS);
+    
+    // Get the list of annotators for this bbox
+    let annotators = vec_map::get(&data.pending_bbox_stats, &coords);
+    let count = vector::length(annotators);
+    
+    // Require at least 2 annotators for validation
+    assert!(count >= 2, ERROR_INSUFFICIENT_ANNOTATIONS);
+    
+    // Find and confirm all matching bbox annotations
+    let mut i = 0;
+    while (i < vector::length(&mut data.bbox_annotations)) {
+      let annotation = vector::borrow_mut(&mut data.bbox_annotations, i);
+      if (!annotation.status.is_confirmed && 
+        annotation.x1 == x1 && 
+        annotation.y1 == y1 && 
+        annotation.x2 == x2 && 
+        annotation.y2 == y2) {
+        let epoch = tx_context::epoch(ctx);
+        annotation.status = AnnotationStatus {
+          is_confirmed: true,
+          confirmed_at: option::some(epoch),
+          confirmed_by: option::some(sender)
+        };
+      };
+      i = i + 1;
+    };
+    
+    // Remove the validated annotations from pending stats
+    vec_map::remove(&mut data.pending_bbox_stats, &coords);
+  }
+
+  /// Validates pending skeleton annotations and confirms them if they meet the validation criteria
+  public fun validate_skeleton_annotations(
+    dataset: &mut Dataset, 
+    path: String, 
+    keypoints: vector<Point>,
+    edges: vector<Edge>,
+    ctx: &mut TxContext
+  ) {
+    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
+    let sender = tx_context::sender(ctx);
+    
+    // Convert keypoints and edges to flat vector for lookup
+    let mut flat_data = vector::empty<u64>();
+    let mut i = 0;
+    while (i < vector::length(&keypoints)) {
+      let point = vector::borrow(&keypoints, i);
+      vector::push_back(&mut flat_data, point.x);
+      vector::push_back(&mut flat_data, point.y);
+      i = i + 1;
+    };
+    
+    i = 0;
+    while (i < vector::length(&edges)) {
+      let edge = vector::borrow(&edges, i);
+      vector::push_back(&mut flat_data, edge.start_idx);
+      vector::push_back(&mut flat_data, edge.end_idx);
+      i = i + 1;
+    };
+    
+    // Check if there are any pending annotations for this skeleton
+    assert!(vec_map::contains(&data.pending_skeleton_stats, &flat_data), ERROR_NO_PENDING_ANNOTATIONS);
+    
+    // Get the list of annotators for this skeleton
+    let annotators = vec_map::get(&data.pending_skeleton_stats, &flat_data);
+    let count = vector::length(annotators);
+    
+    // Require at least 2 annotators for validation
+    assert!(count >= 2, ERROR_INSUFFICIENT_ANNOTATIONS);
+    
+    // Find and confirm all matching skeleton annotations
+    let mut i = 0;
+    while (i < vector::length(&mut data.skeleton_annotations)) {
+      let annotation = vector::borrow_mut(&mut data.skeleton_annotations, i);
+      if (!annotation.status.is_confirmed && 
+        compare_points(&annotation.keypoints, &keypoints) && 
+        compare_edges(&annotation.edges, &edges)) {
+        let epoch = tx_context::epoch(ctx);
+        annotation.status = AnnotationStatus {
+          is_confirmed: true,
+          confirmed_at: option::some(epoch),
+          confirmed_by: option::some(sender)
+        };
+      };
+      i = i + 1;
+    };
+    
+    // Remove the validated annotations from pending stats
+    vec_map::remove(&mut data.pending_skeleton_stats, &flat_data);
+  }
+
+  /// Helper function to compare two vectors of Points
+  fun compare_points(points1: &vector<Point>, points2: &vector<Point>): bool {
+    if (vector::length(points1) != vector::length(points2)) {
+      return false
+    };
+    
+    let mut i = 0;
+    while (i < vector::length(points1)) {
+      let p1 = vector::borrow(points1, i);
+      let p2 = vector::borrow(points2, i);
+      if (p1.x != p2.x || p1.y != p2.y) {
+        return false
+      };
+      i = i + 1;
+    };
+    true
+  }
+
+  /// Helper function to compare two vectors of Edges
+  fun compare_edges(edges1: &vector<Edge>, edges2: &vector<Edge>): bool {
+    if (vector::length(edges1) != vector::length(edges2)) {
+      return false
+    };
+    
+    let mut i = 0;
+    while (i < vector::length(edges1)) {
+      let e1 = vector::borrow(edges1, i);
+      let e2 = vector::borrow(edges2, i);
+      if (e1.start_idx != e2.start_idx || e1.end_idx != e2.end_idx) {
+        return false
+      };
+      i = i + 1;
+    };
+    true
+  }
+
+  // Error constants
+  const ERROR_NO_PENDING_ANNOTATIONS: u64 = 1;
+  const ERROR_INSUFFICIENT_ANNOTATIONS: u64 = 2;
 }
