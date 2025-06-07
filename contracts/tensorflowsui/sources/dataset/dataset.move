@@ -304,7 +304,7 @@ module tensorflowsui::dataset {
   }
 
   /// Adds a label annotation (initially in pending state)
-  public fun add_label_annotation(dataset: &mut Dataset, path: String, label: String, ctx: &mut TxContext) {
+  fun add_label_annotation(dataset: &mut Dataset, path: String, label: String, ctx: &mut TxContext) {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
     let sender = tx_context::sender(ctx);
     
@@ -326,7 +326,7 @@ module tensorflowsui::dataset {
   }
 
   /// Adds a bounding box annotation (initially in pending state)
-  public fun add_bbox_annotation(dataset: &mut Dataset, path: String, x1: u64, y1: u64, x2: u64, y2: u64, ctx: &mut TxContext) {
+  fun add_bbox_annotation(dataset: &mut Dataset, path: String, x1: u64, y1: u64, x2: u64, y2: u64, ctx: &mut TxContext) {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
     let sender = tx_context::sender(ctx);
     
@@ -340,7 +340,7 @@ module tensorflowsui::dataset {
   }
 
   /// Adds a skeleton annotation (initially in pending state)
-  public fun add_skeleton_annotation(
+  fun add_skeleton_annotation(
     dataset: &mut Dataset, 
     path: String, 
     keypoints: vector<Point>,
