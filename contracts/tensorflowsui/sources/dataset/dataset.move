@@ -76,10 +76,10 @@ module tensorflowsui::dataset {
   /// A bounding box annotation for a data in a dataset.
   public struct BBoxAnnotation has copy, drop, store {
     // coordinates of the bounding box [x1, y1, x2, y2]
-    x1: u64,
-    y1: u64,
-    x2: u64,
-    y2: u64,
+    x: u64,
+    y: u64,
+    w: u64,
+    h: u64,
     // address of the user who created this annotation
     annotated_by: address,
     // status of the annotation
@@ -326,13 +326,13 @@ module tensorflowsui::dataset {
   }
 
   /// Adds a bounding box annotation (initially in pending state)
-  fun add_bbox_annotation(dataset: &mut Dataset, path: String, x1: u64, y1: u64, x2: u64, y2: u64, ctx: &mut TxContext) {
+  fun add_bbox_annotation(dataset: &mut Dataset, path: String, x: u64, y: u64, w: u64, h: u64, ctx: &mut TxContext) {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
     let sender = tx_context::sender(ctx);
     
     // Create and add the annotation
     let annotation = BBoxAnnotation {
-      x1, y1, x2, y2,
+      x, y, w, h,
       annotated_by: sender,
       status: new_pending_status(),
     };
@@ -381,29 +381,31 @@ module tensorflowsui::dataset {
     }
   }
 
-  /// Adds bounding box annotations in batch
+  /// Adds a batch of bounding box annotations
   public fun batch_add_bbox_annotations(
-    dataset: &mut Dataset, 
-    paths: vector<String>, 
-    coords: vector<vector<u64>>, 
+    dataset: &mut Dataset,
+    path: String,
+    x_coords: vector<u64>,
+    y_coords: vector<u64>,
+    w_coords: vector<u64>,
+    h_coords: vector<u64>,
     ctx: &mut TxContext
   ) {
-    // Ensure both vectors have the same length
-    assert!(vector::length(&paths) == vector::length(&coords), EInvalidBatchSize);
-    
+    let len = vector::length(&x_coords);
+    assert!(len > 0, EInvalidBatchSize); // Empty batch
+    assert!(len == vector::length(&y_coords), EInvalidBatchSize);
+    assert!(len == vector::length(&w_coords), EInvalidBatchSize);
+    assert!(len == vector::length(&h_coords), EInvalidBatchSize);
+
     let mut i = 0;
-    let len = vector::length(&paths);
-    
     while (i < len) {
-      let path = *vector::borrow(&paths, i);
-      let coord = vector::borrow(&coords, i);
       add_bbox_annotation(
-        dataset, 
-        path, 
-        *vector::borrow(coord, 0), // x1
-        *vector::borrow(coord, 1), // y1
-        *vector::borrow(coord, 2), // x2
-        *vector::borrow(coord, 3), // y2
+        dataset,
+        path,
+        *vector::borrow(&x_coords, i),
+        *vector::borrow(&y_coords, i),
+        *vector::borrow(&w_coords, i),
+        *vector::borrow(&h_coords, i),
         ctx
       );
       i = i + 1;
@@ -561,7 +563,7 @@ module tensorflowsui::dataset {
   }
 
   /// Validates pending bounding box annotations and confirms them if they meet the validation criteria
-  public fun validate_bbox_annotations(dataset: &mut Dataset, path: String, x1: u64, y1: u64, x2: u64, y2: u64, ctx: &mut TxContext) {
+  public fun validate_bbox_annotations(dataset: &mut Dataset, path: String, x: u64, y: u64, w: u64, h: u64, ctx: &mut TxContext) {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
     let sender = tx_context::sender(ctx);
     
@@ -570,10 +572,10 @@ module tensorflowsui::dataset {
     while (i < vector::length(&mut data.bbox_annotations)) {
       let annotation = vector::borrow_mut(&mut data.bbox_annotations, i);
       if (!annotation.status.is_confirmed && 
-        annotation.x1 == x1 && 
-        annotation.y1 == y1 && 
-        annotation.x2 == x2 && 
-        annotation.y2 == y2) {
+        annotation.x == x && 
+        annotation.y == y && 
+        annotation.w == w && 
+        annotation.h == h) {
         update_to_confirmed_status(&mut annotation.status, sender, ctx);
       };
       i = i + 1;
