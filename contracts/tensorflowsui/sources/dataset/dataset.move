@@ -672,52 +672,6 @@ module tensorflowsui::dataset {
       d
   }
 
-  public fun get_dataset_name(dataset: &Dataset): String {
-    dataset.name
-  }
-
-  public fun get_dataset_description(dataset: &Dataset): Option<String> {
-    dataset.description
-  }
-
-  public fun get_dataset_tags(dataset: &Dataset): Option<vector<String>> {
-    dataset.tags
-  }
-
-  public fun get_dataset_data_type(dataset: &Dataset): String {
-    dataset.data_type
-  }
-
-  public fun get_dataset_data_size(dataset: &Dataset): u64 {
-    dataset.data_size
-  }
-
-  public fun get_dataset_creator(dataset: &Dataset): Option<String> {
-    dataset.creator
-  }
-
-  public fun get_dataset_license(dataset: &Dataset): String {
-    dataset.license
-  }
-
-  /// Validates pending label annotations and promotes them to confirmed label annotations
-  public fun validate_label_annotations(dataset: &mut Dataset, path: String, labels_to_confirm: vector<String>, ctx: &mut TxContext) {
-    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
-    let mut i = 0;
-    while (i < vector::length(&labels_to_confirm)) {
-      let label = vector::borrow(&labels_to_confirm, i);
-      let mut j = 0;
-      while (j < vector::length(&data.label_annotations)) {
-                  let annotation = vector::borrow_mut(&mut data.label_annotations, j);
-          if (!annotation.status.is_confirmed && annotation.label == *label) {
-            update_to_confirmed_status(&mut annotation.status, tx_context::sender(ctx), ctx);
-          };
-          j = j + 1;
-      };
-      i = i + 1;
-    }
-  }
-
   /// Gets the count of a specific pending label annotation
   public fun get_pending_label_annotation_count(dataset: &Dataset, path: String, label: String): u64 {
     let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
@@ -743,7 +697,7 @@ module tensorflowsui::dataset {
   public fun get_pending_skeleton_annotation_count(dataset: &Dataset, path: String, keypoints: vector<Point>, edges: vector<Edge>): u64 {
     let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
     
-    // Convert keypoints and edges to a flat vector of u64s for lookup
+    // Convert keypoints and edges to flat vector for lookup
     let mut flat_data = vector::empty<u64>();
     let mut i = 0;
     while (i < vector::length(&keypoints)) {
@@ -766,48 +720,6 @@ module tensorflowsui::dataset {
     } else {
       0
     }
-  }
-
-  /// Gets all pending label annotations and their annotators
-  public fun get_all_pending_label_annotations(dataset: &Dataset, path: String): (vector<String>, vector<vector<address>>) {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    let labels = vec_map::keys(&data.pending_label_stats);
-    let mut annotators = vector::empty<vector<address>>();
-    let mut i = 0;
-    while (i < vector::length(&labels)) {
-      let label = vector::borrow(&labels, i);
-      vector::push_back(&mut annotators, *vec_map::get(&data.pending_label_stats, label));
-      i = i + 1;
-    };
-    (labels, annotators)
-  }
-
-  /// Gets all pending bounding box annotations and their annotators
-  public fun get_all_pending_bbox_annotations(dataset: &Dataset, path: String): (vector<vector<u64>>, vector<vector<address>>) {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    let coords = vec_map::keys(&data.pending_bbox_stats);
-    let mut annotators = vector::empty<vector<address>>();
-    let mut i = 0;
-    while (i < vector::length(&coords)) {
-      let coord = vector::borrow(&coords, i);
-      vector::push_back(&mut annotators, *vec_map::get(&data.pending_bbox_stats, coord));
-      i = i + 1;
-    };
-    (coords, annotators)
-  }
-
-  /// Gets all pending skeleton annotations and their annotators
-  public fun get_all_pending_skeleton_annotations(dataset: &Dataset, path: String): (vector<vector<u64>>, vector<vector<address>>) {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    let flat_data = vec_map::keys(&data.pending_skeleton_stats);
-    let mut annotators = vector::empty<vector<address>>();
-    let mut i = 0;
-    while (i < vector::length(&flat_data)) {
-      let data_point = vector::borrow(&flat_data, i);
-      vector::push_back(&mut annotators, *vec_map::get(&data.pending_skeleton_stats, data_point));
-      i = i + 1;
-    };
-    (flat_data, annotators)
   }
 
   /// Clears all pending annotation statistics for a data path (after validation)
