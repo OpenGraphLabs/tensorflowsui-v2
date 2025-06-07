@@ -480,113 +480,6 @@ module tensorflowsui::dataset {
     }
   }
 
-  /// Gets all label annotations for a data path
-  public fun get_label_annotations(dataset: &Dataset, path: String): vector<LabelAnnotation> {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    data.label_annotations
-  }
-
-  /// Gets all bounding box annotations for a data path
-  public fun get_bbox_annotations(dataset: &Dataset, path: String): vector<BBoxAnnotation> {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    data.bbox_annotations
-  }
-
-  /// Gets all skeleton annotations for a data path
-  public fun get_skeleton_annotations(dataset: &Dataset, path: String): vector<SkeletonAnnotation> {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    data.skeleton_annotations
-  }
-
-  /// Gets pending label annotations for a data path
-  public fun get_pending_label_annotations(dataset: &Dataset, path: String): vector<LabelAnnotation> {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    let mut pending = vector::empty<LabelAnnotation>();
-    let mut i = 0;
-    while (i < vector::length(&data.label_annotations)) {
-      let annotation = vector::borrow(&data.label_annotations, i);
-      if (!annotation.status.is_confirmed) {
-        vector::push_back(&mut pending, *annotation);
-      };
-      i = i + 1;
-    };
-    pending
-  }
-
-  /// Gets pending bounding box annotations for a data path
-  public fun get_pending_bbox_annotations(dataset: &Dataset, path: String): vector<BBoxAnnotation> {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    let mut pending = vector::empty<BBoxAnnotation>();
-    let mut i = 0;
-    while (i < vector::length(&data.bbox_annotations)) {
-      let annotation = vector::borrow(&data.bbox_annotations, i);
-      if (!annotation.status.is_confirmed) {
-        vector::push_back(&mut pending, *annotation);
-      };
-      i = i + 1;
-    };
-    pending
-  }
-
-  /// Gets pending skeleton annotations for a data path
-  public fun get_pending_skeleton_annotations(dataset: &Dataset, path: String): vector<SkeletonAnnotation> {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    let mut pending = vector::empty<SkeletonAnnotation>();
-    let mut i = 0;
-    while (i < vector::length(&data.skeleton_annotations)) {
-      let annotation = vector::borrow(&data.skeleton_annotations, i);
-      if (!annotation.status.is_confirmed) {
-        vector::push_back(&mut pending, *annotation);
-      };
-      i = i + 1;
-    };
-    pending
-  }
-
-  /// Gets confirmed label annotations for a data path
-  public fun get_confirmed_label_annotations(dataset: &Dataset, path: String): vector<LabelAnnotation> {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    let mut confirmed = vector::empty<LabelAnnotation>();
-    let mut i = 0;
-    while (i < vector::length(&data.label_annotations)) {
-      let annotation = vector::borrow(&data.label_annotations, i);
-      if (annotation.status.is_confirmed) {
-        vector::push_back(&mut confirmed, *annotation);
-      };
-      i = i + 1;
-    };
-    confirmed
-  }
-
-  /// Gets confirmed bounding box annotations for a data path
-  public fun get_confirmed_bbox_annotations(dataset: &Dataset, path: String): vector<BBoxAnnotation> {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    let mut confirmed = vector::empty<BBoxAnnotation>();
-    let mut i = 0;
-    while (i < vector::length(&data.bbox_annotations)) {
-      let annotation = vector::borrow(&data.bbox_annotations, i);
-      if (annotation.status.is_confirmed) {
-        vector::push_back(&mut confirmed, *annotation);
-      };
-      i = i + 1;
-    };
-    confirmed
-  }
-
-  /// Gets confirmed skeleton annotations for a data path
-  public fun get_confirmed_skeleton_annotations(dataset: &Dataset, path: String): vector<SkeletonAnnotation> {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    let mut confirmed = vector::empty<SkeletonAnnotation>();
-    let mut i = 0;
-    while (i < vector::length(&data.skeleton_annotations)) {
-      let annotation = vector::borrow(&data.skeleton_annotations, i);
-      if (annotation.status.is_confirmed) {
-        vector::push_back(&mut confirmed, *annotation);
-      };
-      i = i + 1;
-    };
-    confirmed
-  }
 
   /// Confirms label annotations
   public fun confirm_label_annotations(dataset: &mut Dataset, path: String, indices: vector<u64>, ctx: &mut TxContext) {
@@ -672,55 +565,24 @@ module tensorflowsui::dataset {
       d
   }
 
-  /// Gets the count of a specific pending label annotation
-  public fun get_pending_label_annotation_count(dataset: &Dataset, path: String, label: String): u64 {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    if (vec_map::contains(&data.pending_label_stats, &label)) {
-      vector::length(vec_map::get(&data.pending_label_stats, &label))
-    } else {
-      0
-    }
-  }
-
-  /// Gets the count of a specific pending bounding box annotation
-  public fun get_pending_bbox_annotation_count(dataset: &Dataset, path: String, x1: u64, y1: u64, x2: u64, y2: u64): u64 {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    let coords = vector[x1, y1, x2, y2];
-    if (vec_map::contains(&data.pending_bbox_stats, &coords)) {
-      vector::length(vec_map::get(&data.pending_bbox_stats, &coords))
-    } else {
-      0
-    }
-  }
-
-  /// Gets the count of a specific pending skeleton annotation
-  public fun get_pending_skeleton_annotation_count(dataset: &Dataset, path: String, keypoints: vector<Point>, edges: vector<Edge>): u64 {
-    let data = dynamic_field::borrow<DataPath, Data>(&dataset.id, new_data_path(path));
-    
-    // Convert keypoints and edges to flat vector for lookup
-    let mut flat_data = vector::empty<u64>();
+  /// Validates pending label annotations and promotes them to confirmed label annotations
+  public fun validate_label_annotations(dataset: &mut Dataset, path: String, labels_to_confirm: vector<String>, ctx: &mut TxContext) {
+    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
     let mut i = 0;
-    while (i < vector::length(&keypoints)) {
-      let point = vector::borrow(&keypoints, i);
-      vector::push_back(&mut flat_data, point.x);
-      vector::push_back(&mut flat_data, point.y);
+    while (i < vector::length(&labels_to_confirm)) {
+      let label = vector::borrow(&labels_to_confirm, i);
+      let mut j = 0;
+      while (j < vector::length(&data.label_annotations)) {
+                  let annotation = vector::borrow_mut(&mut data.label_annotations, j);
+          if (!annotation.status.is_confirmed && annotation.label == *label) {
+            update_to_confirmed_status(&mut annotation.status, tx_context::sender(ctx), ctx);
+          };
+          j = j + 1;
+      };
       i = i + 1;
-    };
-    
-    i = 0;
-    while (i < vector::length(&edges)) {
-      let edge = vector::borrow(&edges, i);
-      vector::push_back(&mut flat_data, edge.start_idx);
-      vector::push_back(&mut flat_data, edge.end_idx);
-      i = i + 1;
-    };
-    
-    if (vec_map::contains(&data.pending_skeleton_stats, &flat_data)) {
-      vector::length(vec_map::get(&data.pending_skeleton_stats, &flat_data))
-    } else {
-      0
     }
   }
+
 
   /// Clears all pending annotation statistics for a data path (after validation)
   public fun clear_pending_annotation_stats(dataset: &mut Dataset, path: String) {
