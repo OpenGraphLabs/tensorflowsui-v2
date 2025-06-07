@@ -333,16 +333,7 @@ module tensorflowsui::dataset {
   public fun add_bbox_annotation(dataset: &mut Dataset, path: String, x1: u64, y1: u64, x2: u64, y2: u64, ctx: &mut TxContext) {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
     let sender = tx_context::sender(ctx);
-    let coords = vector[x1, y1, x2, y2];
     
-    // Add to pending stats
-    if (vec_map::contains(&data.pending_bbox_stats, &coords)) {
-      let addresses = vec_map::get_mut(&mut data.pending_bbox_stats, &coords);
-      vector::push_back(addresses, sender);
-    } else {
-      vec_map::insert(&mut data.pending_bbox_stats, coords, vector[sender]);
-    };
-
     // Create and add the annotation
     let annotation = BBoxAnnotation {
       x1, y1, x2, y2,
@@ -363,32 +354,6 @@ module tensorflowsui::dataset {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
     let sender = tx_context::sender(ctx);
     
-    // Convert keypoints and edges to a flat vector of u64s for storage
-    let mut flat_data = vector::empty<u64>();
-    let mut i = 0;
-    while (i < vector::length(&keypoints)) {
-      let point = vector::borrow(&keypoints, i);
-      vector::push_back(&mut flat_data, point.x);
-      vector::push_back(&mut flat_data, point.y);
-      i = i + 1;
-    };
-    
-    i = 0;
-    while (i < vector::length(&edges)) {
-      let edge = vector::borrow(&edges, i);
-      vector::push_back(&mut flat_data, edge.start_idx);
-      vector::push_back(&mut flat_data, edge.end_idx);
-      i = i + 1;
-    };
-    
-    // Add to pending stats
-    if (vec_map::contains(&data.pending_skeleton_stats, &flat_data)) {
-      let addresses = vec_map::get_mut(&mut data.pending_skeleton_stats, &flat_data);
-      vector::push_back(addresses, sender);
-    } else {
-      vec_map::insert(&mut data.pending_skeleton_stats, flat_data, vector[sender]);
-    };
-
     // Create and add the annotation
     let annotation = SkeletonAnnotation {
       keypoints,
@@ -588,25 +553,12 @@ module tensorflowsui::dataset {
   public fun clear_pending_annotation_stats(dataset: &mut Dataset, path: String) {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
     data.pending_label_stats = vec_map::empty<String, vector<address>>();
-    data.pending_bbox_stats = vec_map::empty<vector<u64>, vector<address>>();
-    data.pending_skeleton_stats = vec_map::empty<vector<u64>, vector<address>>();
   }
 
   /// Validates pending bounding box annotations and confirms them if they meet the validation criteria
   public fun validate_bbox_annotations(dataset: &mut Dataset, path: String, x1: u64, y1: u64, x2: u64, y2: u64, ctx: &mut TxContext) {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
     let sender = tx_context::sender(ctx);
-    let coords = vector[x1, y1, x2, y2];
-    
-    // Check if there are any pending annotations for this bbox
-    assert!(vec_map::contains(&data.pending_bbox_stats, &coords), ERROR_NO_PENDING_ANNOTATIONS);
-    
-    // Get the list of annotators for this bbox
-    let annotators = vec_map::get(&data.pending_bbox_stats, &coords);
-    let count = vector::length(annotators);
-    
-    // Require at least 2 annotators for validation
-    assert!(count >= 2, ERROR_INSUFFICIENT_ANNOTATIONS);
     
     // Find and confirm all matching bbox annotations
     let mut i = 0;
@@ -621,9 +573,6 @@ module tensorflowsui::dataset {
       };
       i = i + 1;
     };
-    
-    // Remove the validated annotations from pending stats
-    vec_map::remove(&mut data.pending_bbox_stats, &coords);
   }
 
   /// Validates pending skeleton annotations and confirms them if they meet the validation criteria
@@ -637,34 +586,6 @@ module tensorflowsui::dataset {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
     let sender = tx_context::sender(ctx);
     
-    // Convert keypoints and edges to flat vector for lookup
-    let mut flat_data = vector::empty<u64>();
-    let mut i = 0;
-    while (i < vector::length(&keypoints)) {
-      let point = vector::borrow(&keypoints, i);
-      vector::push_back(&mut flat_data, point.x);
-      vector::push_back(&mut flat_data, point.y);
-      i = i + 1;
-    };
-    
-    i = 0;
-    while (i < vector::length(&edges)) {
-      let edge = vector::borrow(&edges, i);
-      vector::push_back(&mut flat_data, edge.start_idx);
-      vector::push_back(&mut flat_data, edge.end_idx);
-      i = i + 1;
-    };
-    
-    // Check if there are any pending annotations for this skeleton
-    assert!(vec_map::contains(&data.pending_skeleton_stats, &flat_data), ERROR_NO_PENDING_ANNOTATIONS);
-    
-    // Get the list of annotators for this skeleton
-    let annotators = vec_map::get(&data.pending_skeleton_stats, &flat_data);
-    let count = vector::length(annotators);
-    
-    // Require at least 2 annotators for validation
-    assert!(count >= 2, ERROR_INSUFFICIENT_ANNOTATIONS);
-    
     // Find and confirm all matching skeleton annotations
     let mut i = 0;
     while (i < vector::length(&mut data.skeleton_annotations)) {
@@ -676,9 +597,6 @@ module tensorflowsui::dataset {
       };
       i = i + 1;
     };
-    
-    // Remove the validated annotations from pending stats
-    vec_map::remove(&mut data.pending_skeleton_stats, &flat_data);
   }
 
   /// Helper function to compare two vectors of Points
