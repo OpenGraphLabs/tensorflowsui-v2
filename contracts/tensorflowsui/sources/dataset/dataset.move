@@ -131,9 +131,7 @@ module tensorflowsui::dataset {
       range: Option<Range>,
 
       // Pending annotation statistics
-      pending_label_stats: VecMap<String, vector<address>>,
-      pending_bbox_stats: VecMap<vector<u64>, vector<address>>,
-      pending_skeleton_stats: VecMap<vector<u64>, vector<address>>,
+      pending_label_stats: VecMap<String, u64>,
 
       // All annotations
       label_annotations: vector<LabelAnnotation>,
@@ -255,9 +253,7 @@ module tensorflowsui::dataset {
           blob_hash,
           data_type,
           range,
-          pending_label_stats: vec_map::empty<String, vector<address>>(),
-          pending_bbox_stats: vec_map::empty<vector<u64>, vector<address>>(),
-          pending_skeleton_stats: vec_map::empty<vector<u64>, vector<address>>(),
+          pending_label_stats: vec_map::empty<String, u64>(),
           label_annotations: vector[],
           bbox_annotations: vector[],
           skeleton_annotations: vector[],
@@ -312,12 +308,12 @@ module tensorflowsui::dataset {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
     let sender = tx_context::sender(ctx);
     
-    // Add to pending stats
+    // Update pending stats
     if (vec_map::contains(&data.pending_label_stats, &label)) {
-      let addresses = vec_map::get_mut(&mut data.pending_label_stats, &label);
-      vector::push_back(addresses, sender);
+      let count = vec_map::get_mut(&mut data.pending_label_stats, &label);
+      *count = *count + 1;
     } else {
-      vec_map::insert(&mut data.pending_label_stats, label, vector[sender]);
+      vec_map::insert(&mut data.pending_label_stats, label, 1);
     };
 
     // Create and add the annotation
@@ -530,29 +526,38 @@ module tensorflowsui::dataset {
       d
   }
 
-  /// Validates pending label annotations and promotes them to confirmed label annotations
-  public fun validate_label_annotations(dataset: &mut Dataset, path: String, labels_to_confirm: vector<String>, ctx: &mut TxContext) {
+  /// Validates pending label annotations and confirms them if they meet the validation criteria
+  public fun validate_label_annotations(dataset: &mut Dataset, path: String, label: String, ctx: &mut TxContext) {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
+    let sender = tx_context::sender(ctx);
+    
+    // Check if there are any pending annotations for this label
+    assert!(vec_map::contains(&data.pending_label_stats, &label), ERROR_NO_PENDING_ANNOTATIONS);
+    
+    // Get the count for this label
+    let count = *vec_map::get(&data.pending_label_stats, &label);
+    
+    // Require at least 2 annotations for validation
+    assert!(count >= 2, ERROR_INSUFFICIENT_ANNOTATIONS);
+    
+    // Find and confirm all matching label annotations
     let mut i = 0;
-    while (i < vector::length(&labels_to_confirm)) {
-      let label = vector::borrow(&labels_to_confirm, i);
-      let mut j = 0;
-      while (j < vector::length(&data.label_annotations)) {
-                  let annotation = vector::borrow_mut(&mut data.label_annotations, j);
-          if (!annotation.status.is_confirmed && annotation.label == *label) {
-            update_to_confirmed_status(&mut annotation.status, tx_context::sender(ctx), ctx);
-          };
-          j = j + 1;
+    while (i < vector::length(&mut data.label_annotations)) {
+      let annotation = vector::borrow_mut(&mut data.label_annotations, i);
+      if (!annotation.status.is_confirmed && annotation.label == label) {
+        update_to_confirmed_status(&mut annotation.status, sender, ctx);
       };
       i = i + 1;
-    }
+    };
+    
+    // Remove the validated annotations from pending stats
+    vec_map::remove(&mut data.pending_label_stats, &label);
   }
-
 
   /// Clears all pending annotation statistics for a data path (after validation)
   public fun clear_pending_annotation_stats(dataset: &mut Dataset, path: String) {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
-    data.pending_label_stats = vec_map::empty<String, vector<address>>();
+    data.pending_label_stats = vec_map::empty<String, u64>();
   }
 
   /// Validates pending bounding box annotations and confirms them if they meet the validation criteria
