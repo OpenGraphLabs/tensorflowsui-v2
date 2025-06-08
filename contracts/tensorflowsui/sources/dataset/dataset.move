@@ -139,12 +139,6 @@ module tensorflowsui::dataset {
       skeleton_annotations: vector<SkeletonAnnotation>,
   }
 
-  /// An annotation for a data in a dataset.
-  public struct Annotation has copy, drop, store {
-    // label of the annotation
-    label: String,
-  }
-
   public struct Range has drop, store {
       start: Option<u64>, // inclusive lower bound
       end: Option<u64>, // exclusive upper bound
@@ -469,29 +463,40 @@ module tensorflowsui::dataset {
     }
   }
 
-
   /// Confirms label annotations
-  public fun confirm_label_annotations(dataset: &mut Dataset, path: String, indices: vector<u64>, ctx: &mut TxContext) {
+  public fun confirm_label_annotations(dataset: &mut Dataset, path: String, label: String, ctx: &mut TxContext) {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
+    let sender = tx_context::sender(ctx);
+    
+    // Find and confirm all matching label annotations
     let mut i = 0;
-    while (i < vector::length(&indices)) {
-              let idx = *vector::borrow(&indices, i);
-        let annotation = vector::borrow_mut(&mut data.label_annotations, idx);
-        update_to_confirmed_status(&mut annotation.status, tx_context::sender(ctx), ctx);
-        i = i + 1;
-    }
+    while (i < vector::length(&mut data.label_annotations)) {
+      let annotation = vector::borrow_mut(&mut data.label_annotations, i);
+      if (!annotation.status.is_confirmed && annotation.label == label) {
+        update_to_confirmed_status(&mut annotation.status, sender, ctx);
+      };
+      i = i + 1;
+    };
   }
 
   /// Confirms bounding box annotations
-  public fun confirm_bbox_annotations(dataset: &mut Dataset, path: String, indices: vector<u64>, ctx: &mut TxContext) {
+  public fun confirm_bbox_annotations(dataset: &mut Dataset, path: String, x: u64, y: u64, w: u64, h: u64, ctx: &mut TxContext) {
     let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
+    let sender = tx_context::sender(ctx);
+    
+    // Find and confirm all matching bbox annotations
     let mut i = 0;
-    while (i < vector::length(&indices)) {
-              let idx = *vector::borrow(&indices, i);
-        let annotation = vector::borrow_mut(&mut data.bbox_annotations, idx);
-        update_to_confirmed_status(&mut annotation.status, tx_context::sender(ctx), ctx);
-        i = i + 1;
-    }
+    while (i < vector::length(&mut data.bbox_annotations)) {
+      let annotation = vector::borrow_mut(&mut data.bbox_annotations, i);
+      if (!annotation.status.is_confirmed && 
+        annotation.x == x && 
+        annotation.y == y && 
+        annotation.w == w && 
+        annotation.h == h) {
+        update_to_confirmed_status(&mut annotation.status, sender, ctx);
+      };
+      i = i + 1;
+    };
   }
 
   /// Confirms skeleton annotations
@@ -580,68 +585,6 @@ module tensorflowsui::dataset {
     true
   }
 
-  // Error constants
-  const ERROR_NO_PENDING_ANNOTATIONS: u64 = 1;
-  const ERROR_INSUFFICIENT_ANNOTATIONS: u64 = 2;
-
-  /// Validates a batch of label annotations
-  public fun validate_label_annotations_batch(dataset: &mut Dataset, path: String, indices: vector<u64>, ctx: &mut TxContext) {
-    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
-    let mut i = 0;
-    let sender = tx_context::sender(ctx);
-    while (i < vector::length(&indices)) {
-      let idx = *vector::borrow(&indices, i);
-      let annotation = vector::borrow_mut(&mut data.label_annotations, idx);
-      update_to_confirmed_status(&mut annotation.status, sender, ctx);
-      i = i + 1;
-    }
-  }
-
-  /// Validates a batch of bounding box annotations
-  public fun validate_bbox_annotations_batch(dataset: &mut Dataset, path: String, indices: vector<u64>, ctx: &mut TxContext) {
-    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
-    let mut i = 0;
-    let sender = tx_context::sender(ctx);
-    while (i < vector::length(&indices)) {
-      let idx = *vector::borrow(&indices, i);
-      let annotation = vector::borrow_mut(&mut data.bbox_annotations, idx);
-      update_to_confirmed_status(&mut annotation.status, sender, ctx);
-      i = i + 1;
-    }
-  }
-
-  /// Validates a batch of skeleton annotations
-  public fun validate_skeleton_annotations_batch(dataset: &mut Dataset, path: String, indices: vector<u64>, ctx: &mut TxContext) {
-    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
-    let mut i = 0;
-    let sender = tx_context::sender(ctx);
-    while (i < vector::length(&indices)) {
-      let idx = *vector::borrow(&indices, i);
-      let annotation = vector::borrow_mut(&mut data.skeleton_annotations, idx);
-      update_to_confirmed_status(&mut annotation.status, sender, ctx);
-      i = i + 1;
-    }
-  }
-
-  /// Validates all pending label annotations for a given label
-  public fun validate_all_pending_label_annotations(dataset: &mut Dataset, path: String, labels: vector<String>, ctx: &mut TxContext) {
-    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
-    let mut i = 0;
-    let sender = tx_context::sender(ctx);
-    while (i < vector::length(&labels)) {
-      let label = vector::borrow(&labels, i);
-      let mut j = 0;
-      while (j < vector::length(&mut data.label_annotations)) {
-        let annotation = vector::borrow_mut(&mut data.label_annotations, j);
-        if (!annotation.status.is_confirmed && annotation.label == *label) {
-          update_to_confirmed_status(&mut annotation.status, sender, ctx);
-        };
-        j = j + 1;
-      };
-      i = i + 1;
-    }
-  }
-
   /// Deletes a dataset object.
   ///
   /// NB: This function does **NOT** delete the dynamic fields! Make sure to call this function
@@ -690,107 +633,4 @@ module tensorflowsui::dataset {
       d
   }
 
-  /// Validates pending label annotations and confirms them if they meet the validation criteria
-  public fun validate_label_annotations(dataset: &mut Dataset, path: String, label: String, ctx: &mut TxContext) {
-    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
-    let sender = tx_context::sender(ctx);
-    
-    // Check if there are any pending annotations for this label
-    assert!(vec_map::contains(&data.pending_label_stats, &label), ERROR_NO_PENDING_ANNOTATIONS);
-    
-    // Get the count for this label
-    let count = *vec_map::get(&data.pending_label_stats, &label);
-    
-    // Require at least 2 annotations for validation
-    assert!(count >= 2, ERROR_INSUFFICIENT_ANNOTATIONS);
-    
-    // Find and confirm all matching label annotations
-    let mut i = 0;
-    while (i < vector::length(&mut data.label_annotations)) {
-      let annotation = vector::borrow_mut(&mut data.label_annotations, i);
-      if (!annotation.status.is_confirmed && annotation.label == label) {
-        update_to_confirmed_status(&mut annotation.status, sender, ctx);
-      };
-      i = i + 1;
-    };
-    
-    // Remove the validated annotations from pending stats
-    vec_map::remove(&mut data.pending_label_stats, &label);
-  }
-
-  /// Clears all pending annotation statistics for a data path (after validation)
-  public fun clear_pending_annotation_stats(dataset: &mut Dataset, path: String) {
-    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
-    data.pending_label_stats = vec_map::empty<String, u64>();
-  }
-
-  /// Validates pending bounding box annotations and confirms them if they meet the validation criteria
-  public fun validate_bbox_annotations(dataset: &mut Dataset, path: String, x: u64, y: u64, w: u64, h: u64, ctx: &mut TxContext) {
-    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
-    let sender = tx_context::sender(ctx);
-    
-    // Find and confirm all matching bbox annotations
-    let mut i = 0;
-    while (i < vector::length(&mut data.bbox_annotations)) {
-      let annotation = vector::borrow_mut(&mut data.bbox_annotations, i);
-      if (!annotation.status.is_confirmed && 
-        annotation.x == x && 
-        annotation.y == y && 
-        annotation.w == w && 
-        annotation.h == h) {
-        update_to_confirmed_status(&mut annotation.status, sender, ctx);
-      };
-      i = i + 1;
-    };
-  }
-
-  /// Validates pending skeleton annotations and confirms them if they meet the validation criteria
-  public fun validate_skeleton_annotations(
-    dataset: &mut Dataset, 
-    path: String, 
-    x_coords: vector<u64>,
-    y_coords: vector<u64>,
-    edge_start_indices: vector<u64>,
-    edge_end_indices: vector<u64>,
-    ctx: &mut TxContext
-  ) {
-    let data = dynamic_field::borrow_mut<DataPath, Data>(&mut dataset.id, new_data_path(path));
-    let sender = tx_context::sender(ctx);
-
-    // Convert coordinates to Points
-    let keypoints_len = vector::length(&x_coords);
-    assert!(keypoints_len == vector::length(&y_coords), 0);
-    let mut keypoints = vector::empty<Point>();
-    let mut i = 0;
-    while (i < keypoints_len) {
-        let x = *vector::borrow(&x_coords, i);
-        let y = *vector::borrow(&y_coords, i);
-        vector::push_back(&mut keypoints, Point { x, y });
-        i = i + 1;
-    };
-
-    // Convert indices to Edges
-    let edges_len = vector::length(&edge_start_indices);
-    assert!(edges_len == vector::length(&edge_end_indices), 0);
-    let mut edges = vector::empty<Edge>();
-    let mut i = 0;
-    while (i < edges_len) {
-        let start_idx = *vector::borrow(&edge_start_indices, i);
-        let end_idx = *vector::borrow(&edge_end_indices, i);
-        vector::push_back(&mut edges, Edge { start_idx, end_idx });
-        i = i + 1;
-    };
-    
-    // Find and confirm all matching skeleton annotations
-    let mut i = 0;
-    while (i < vector::length(&mut data.skeleton_annotations)) {
-        let annotation = vector::borrow_mut(&mut data.skeleton_annotations, i);
-        if (!annotation.status.is_confirmed && 
-            compare_points(&annotation.keypoints, &keypoints) && 
-            compare_edges(&annotation.edges, &edges)) {
-            update_to_confirmed_status(&mut annotation.status, sender, ctx);
-        };
-        i = i + 1;
-    };
-  }
 }
