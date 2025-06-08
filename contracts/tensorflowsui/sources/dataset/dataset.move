@@ -75,7 +75,7 @@ module tensorflowsui::dataset {
 
   /// A bounding box annotation for a data in a dataset.
   public struct BBoxAnnotation has copy, drop, store {
-    // coordinates of the bounding box [x1, y1, x2, y2]
+    // coordinates of the bounding box [x, y, w, h]
     x: u64,
     y: u64,
     w: u64,
