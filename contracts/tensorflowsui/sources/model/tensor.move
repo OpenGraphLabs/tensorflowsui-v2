@@ -298,6 +298,7 @@ module tensorflowsui::tensor {
         let s = a.scale;
         let len = vector::length(&a.magnitude);
         assert!(len == vector::length(&b.magnitude), 1202);
+        let divisor = math::scale_up(1, s);
 
         let mut out_mag = vector::empty<u64>();
         let mut out_sign= vector::empty<u64>();
@@ -310,7 +311,7 @@ module tensorflowsui::tensor {
             let mb = *vector::borrow(&b.magnitude, i);
 
             let mul_sgn = if (sa == sb) { 0 } else { 1 };
-            let mul_mag = ma * mb; // => scale=2s
+            let mul_mag = (ma * mb) / divisor;
 
             vector::push_back(&mut out_sign, mul_sgn);
             vector::push_back(&mut out_mag,  mul_mag);
@@ -318,14 +319,14 @@ module tensorflowsui::tensor {
             i = i + 1;
         };
 
-        new_tensor(copy a.shape, out_mag, out_sign, s * 2)
+        new_tensor(copy a.shape, out_mag, out_sign, s)
     }
 
     public fun divide(a: &Tensor, b: &Tensor): Tensor {
         assert!(a.scale == b.scale, 1301);
         let s = a.scale;
         let len = vector::length(&a.magnitude);
-        let divisor = math::scale_up(1, s);
+        let multiplier = math::scale_up(1, s);
 
         let mut out_mag = vector::empty<u64>();
         let mut out_sign= vector::empty<u64>();
@@ -340,9 +341,8 @@ module tensorflowsui::tensor {
             let div_sgn = if (sa == sb) { 0 } else { 1 };
             assert!(mb != 0, 9999);
 
-            // (ma * 10^s) / mb
-            let numerator = ma * divisor;
-            let div_mag   = numerator / mb;
+            let numerator = ma * multiplier;
+            let div_mag = numerator / mb;
 
             vector::push_back(&mut out_sign, div_sgn);
             vector::push_back(&mut out_mag,  div_mag);
