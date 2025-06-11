@@ -7,6 +7,7 @@ module tensorflowsui::dataset {
   use sui::package::{Self, Publisher};
   use sui::vec_map::{Self, VecMap};
   use tensorflowsui::metadata;
+  use tensorflowsui::annotation;
   use sui::event;
   use sui::dynamic_field;
 
@@ -37,7 +38,17 @@ module tensorflowsui::dataset {
     event::emit(DatasetBurnedEvent {
         dataset_id,
     });
-}
+  }
+
+  /// One-Time-Witness for the module.
+  public struct DATASET has drop {}
+
+  fun init(otw: DATASET, ctx: &mut TxContext) {
+    let publisher = package::claim(otw, ctx);
+    let d = init_dataset_display(&publisher, ctx);
+    transfer::public_transfer(d, ctx.sender());
+    transfer::public_transfer(publisher, ctx.sender());
+  }
 
   /// The dataset published on Sui.
   public struct Dataset has key, store {
@@ -56,60 +67,6 @@ module tensorflowsui::dataset {
       creator: Option<String>,
       // license of the dataset
       license: String,
-  }
-
-  /// Status of an annotation
-  public struct AnnotationStatus has copy, drop, store {
-    is_confirmed: bool,
-    confirmed_at: Option<u64>,  // timestamp when confirmed
-    confirmed_by: Option<address>,  // address of the confirmer
-  }
-
-  /// An annotation type for a data in a dataset.
-  public struct LabelAnnotation has copy, drop, store {
-    // label of the annotation
-    label: String,
-    // address of the user who created this annotation
-    annotated_by: address,
-    // status of the annotation
-    status: AnnotationStatus,
-  }
-
-  /// A bounding box annotation for a data in a dataset.
-  public struct BBoxAnnotation has copy, drop, store {
-    // coordinates of the bounding box [x, y, w, h]
-    x: u64,
-    y: u64,
-    w: u64,
-    h: u64,
-    // address of the user who created this annotation
-    annotated_by: address,
-    // status of the annotation
-    status: AnnotationStatus,
-  }
-
-  /// A skeleton annotation for a data in a dataset.
-  public struct SkeletonAnnotation has copy, drop, store {
-    // keypoints of the skeleton [(x1,y1), (x2,y2), ...]
-    keypoints: vector<Point>,
-    // edges connecting keypoints [(start_idx, end_idx), ...]
-    edges: vector<Edge>,
-    // address of the user who created this annotation
-    annotated_by: address,
-    // status of the annotation
-    status: AnnotationStatus,
-  }
-
-  /// A point struct for skeleton keypoints
-  public struct Point has copy, drop, store {
-    x: u64,
-    y: u64,
-  }
-
-  /// An edge struct for skeleton connections
-  public struct Edge has copy, drop, store {
-    start_idx: u64,
-    end_idx: u64,
   }
 
   /// A data in a dataset.
@@ -154,16 +111,6 @@ module tensorflowsui::dataset {
 
   fun new_data_path(path: String): DataPath {
     DataPath { path }
-  }
-
-  /// One-Time-Witness for the module.
-  public struct DATASET has drop {}
-
-  fun init(otw: DATASET, ctx: &mut TxContext) {
-    let publisher = package::claim(otw, ctx);
-    let d = init_dataset_display(&publisher, ctx);
-    transfer::public_transfer(d, ctx.sender());
-    transfer::public_transfer(publisher, ctx.sender());
   }
 
   /// Creates a new dataset.
@@ -282,6 +229,11 @@ module tensorflowsui::dataset {
     let mut data = remove_data(dataset, old_path);
     data.path = new_path;
     add_data(dataset, data);
+  }
+
+  public fun add_annotation(data: &mut Data, annotation: annotation::Annotation, ctx: &mut TxContext) {
+    let path_obj = annotation::new_annotation_path(annotation.label, ctx);
+    dynamic_field::add(&mut data.id, path_obj, annotation);
   }
 
   /// Creates a new pending annotation status
