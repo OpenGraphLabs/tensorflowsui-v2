@@ -5,7 +5,6 @@ module tensorflowsui::dataset {
   use std::string::{Self, String};
   use sui::display::{Self, Display};
   use sui::package::{Self, Publisher};
-  use sui::vec_map::{Self, VecMap};
   use tensorflowsui::metadata;
   use tensorflowsui::annotation;
   use sui::event;
@@ -107,7 +106,7 @@ module tensorflowsui::dataset {
   }
 
   /// Representation of the data path.
-  /// Ensures there are no namespace collisions in the dynamic fields.
+  /// Ensures there are no namespace collisions in the dynamic_object_fields.
   public struct DataPath has copy, drop, store {
       path: String,
   }
@@ -211,18 +210,17 @@ module tensorflowsui::dataset {
     dynamic_field::add(&mut dataset.id, path_obj, data);
   }
 
+  public fun borrow_mut_data(dataset: &mut Dataset, path: String): &mut Data {
+    let path_obj = new_data_path(path);
+    dynamic_field::borrow_mut(&mut dataset.id, path_obj)
+  }
+
   /// Removes a data from a dataset.
   ///
   /// Aborts if the data does not exist.
   public fun remove_data(dataset: &mut Dataset, path: String): Data {
     let path_obj = new_data_path(path);
     dynamic_field::remove(&mut dataset.id, path_obj)
-  }
-
-  /// Removes a data from a dataset if it exists.
-  public fun remove_data_if_exists(dataset: &mut Dataset, path: String): Option<Data> {
-    let path_obj = new_data_path(path);
-    dynamic_field::remove_if_exists(&mut dataset.id, path_obj)
   }
 
   /// Changes the path of a data on a dataset.
@@ -237,7 +235,8 @@ module tensorflowsui::dataset {
     dynamic_field::add(&mut data.id, path_obj, annotation);
   }
 
-  public fun add_annotations(data: &mut Data, annotations: vector<annotation::Annotation>, ctx: &mut TxContext) {
+  public fun add_annotations(dataset: &mut Dataset, path: String, annotations: vector<annotation::Annotation>, ctx: &mut TxContext) {
+    let data = borrow_mut_data(dataset, path);
     let mut i = 0;
     let len = vector::length(&annotations);
     while (i < len) {
