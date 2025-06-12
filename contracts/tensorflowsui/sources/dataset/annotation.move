@@ -5,24 +5,6 @@ module tensorflowsui::annotation {
   use std::string::{Self, String};
   use sui::address;
 
-  // public enum Annotation has copy, drop, store {
-  //   Label {
-  //     path: String,
-  //     status: AnnotationStatus,
-  //     value: LabelAnnotation,
-  //   },
-  //   BBox {
-  //     path: String,
-  //     status: AnnotationStatus,
-  //     value: BBoxAnnotation,
-  //   },
-  //   Skeleton {
-  //     path: String,
-  //     status: AnnotationStatus,
-  //     value: SkeletonAnnotation,
-  //   },
-  // }
-
   public struct Annotation has copy, drop, store {
     status: AnnotationStatus,
     value: AnnotationValue,
