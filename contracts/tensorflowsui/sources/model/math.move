@@ -14,6 +14,8 @@ module tensorflowsui::math {
   ): (u64, u64) {
     if (s1 == s2) {
       // Same sign: add magnitudes
+      // Overflow protection: check if m1 + m2 would overflow
+      assert!(m1 <= (18446744073709551615u64 - m2), 3001); // Prevent overflow
       (s1, m1 + m2)
     } else {
       // Different signs: subtract magnitudes
@@ -57,6 +59,8 @@ module tensorflowsui::math {
     let mut factor = 1;
     let mut i = 0;
     while (i < scale) {
+        // Overflow protection: check if factor * 10 would overflow
+        assert!(factor <= (18446744073709551615u64 / 10), 3003); // Prevent overflow
         factor = factor * 10;
         i = i + 1;
     };
@@ -72,9 +76,49 @@ module tensorflowsui::math {
     let mut i = 0;
 
     while (i < scale) {
+        // Overflow protection: check if result * 10 would overflow
+        assert!(result <= (18446744073709551615u64 / 10), 3002); // Prevent overflow
         result = result * 10;
         i = i + 1;
     };
     result
+  }
+
+  /// @notice Optimized scale function using lookup table (much faster!)
+  /// @param value The value to scale up
+  /// @param scale The scale to apply (0-18 only)
+  /// @return The scaled up value
+  public fun scale_up_optimized(value: u64, scale: u64): u64 {
+    // Pre-computed powers of 10 for O(1) lookup instead of O(n) loop
+    let scale_factors = vector[
+        1,                     // 10^0
+        10,                    // 10^1
+        100,                   // 10^2
+        1000,                  // 10^3
+        10000,                 // 10^4
+        100000,                // 10^5
+        1000000,               // 10^6
+        10000000,              // 10^7
+        100000000,             // 10^8
+        1000000000,            // 10^9
+        10000000000,           // 10^10
+        100000000000,          // 10^11
+        1000000000000,         // 10^12
+        10000000000000,        // 10^13
+        100000000000000,       // 10^14
+        1000000000000000,      // 10^15
+        10000000000000000,     // 10^16
+        100000000000000000,    // 10^17
+        1000000000000000000    // 10^18 (max safe for u64)
+    ];
+    
+    assert!(scale < vector::length(&scale_factors), 3004); // Scale too large
+    
+    let factor = *vector::borrow(&scale_factors, scale);
+    
+    // Overflow protection
+    assert!(value == 0 || factor <= (18446744073709551615u64 / value), 3005);
+    
+    value * factor
   }
 }

@@ -246,6 +246,7 @@ module tensorflowsui::tensor {
 
     public fun add(a: &Tensor, b: &Tensor): Tensor {
         assert!(a.scale == b.scale, 1001);
+        assert!(a.shape == b.shape, 1002); // Ensure tensors have same shape
         let len = vector::length(&a.magnitude);
         assert!(len == vector::length(&b.magnitude), 1002);
 
@@ -271,8 +272,10 @@ module tensorflowsui::tensor {
 
     public fun subtract(a: &Tensor, b: &Tensor): Tensor {
         assert!(a.scale == b.scale, 1101);
+        assert!(a.shape == b.shape, 1102); // Ensure tensors have same shape
 
-        let len = vector::length(&b.sign);
+        let len = vector::length(&a.magnitude); // Use consistent tensor for length
+        assert!(len == vector::length(&b.magnitude), 1103); // Validate lengths match
         let mut flipped_sign = vector::empty<u64>();
 
         let mut i = 0;
@@ -311,6 +314,44 @@ module tensorflowsui::tensor {
             let mb = *vector::borrow(&b.magnitude, i);
 
             let mul_sgn = if (sa == sb) { 0 } else { 1 };
+            
+            // Overflow protection: check if ma * mb would overflow
+            assert!(ma == 0 || mb <= (18446744073709551615u64 / ma), 1203);
+            
+            let mul_mag = (ma * mb) / divisor;
+
+            vector::push_back(&mut out_sign, mul_sgn);
+            vector::push_back(&mut out_mag,  mul_mag);
+
+            i = i + 1;
+        };
+
+        new_tensor(copy a.shape, out_mag, out_sign, s)
+    }
+
+    /// @notice Optimized multiplication with O(1) scaling instead of O(n)
+    public fun multiply_optimized(a: &Tensor, b: &Tensor): Tensor {
+        assert!(a.scale == b.scale, 1201);
+        let s = a.scale;
+        let len = vector::length(&a.magnitude);
+        assert!(len == vector::length(&b.magnitude), 1202);
+        let divisor = math::scale_up_optimized(1, s); // O(1) instead of O(s)
+
+        let mut out_mag = vector::empty<u64>();
+        let mut out_sign= vector::empty<u64>();
+
+        let mut i = 0;
+        while (i < len) {
+            let sa = *vector::borrow(&a.sign, i);
+            let ma = *vector::borrow(&a.magnitude, i);
+            let sb = *vector::borrow(&b.sign, i);
+            let mb = *vector::borrow(&b.magnitude, i);
+
+            let mul_sgn = if (sa == sb) { 0 } else { 1 };
+            
+            // Overflow protection: check if ma * mb would overflow
+            assert!(ma == 0 || mb <= (18446744073709551615u64 / ma), 1203);
+            
             let mul_mag = (ma * mb) / divisor;
 
             vector::push_back(&mut out_sign, mul_sgn);
@@ -326,6 +367,7 @@ module tensorflowsui::tensor {
         assert!(a.scale == b.scale, 1301);
         let s = a.scale;
         let len = vector::length(&a.magnitude);
+        assert!(len == vector::length(&b.magnitude), 1302);
         let multiplier = math::scale_up(1, s);
 
         let mut out_mag = vector::empty<u64>();
@@ -341,6 +383,8 @@ module tensorflowsui::tensor {
             let div_sgn = if (sa == sb) { 0 } else { 1 };
             assert!(mb != 0, 9999);
 
+            assert!(ma == 0 || multiplier <= (18446744073709551615u64 / ma), 1304);
+            
             let numerator = ma * multiplier;
             let div_mag = numerator / mb;
 
@@ -350,6 +394,80 @@ module tensorflowsui::tensor {
         };
 
         new_tensor(copy a.shape, out_mag, out_sign, s)
+    }
+
+    /// @notice Optimized division with O(1) scaling instead of O(n)
+    public fun divide_optimized(a: &Tensor, b: &Tensor): Tensor {
+        assert!(a.scale == b.scale, 1301);
+        let s = a.scale;
+        let len = vector::length(&a.magnitude);
+        assert!(len == vector::length(&b.magnitude), 1302);
+        let multiplier = math::scale_up_optimized(1, s); // O(1) instead of O(s)
+
+        let mut out_mag = vector::empty<u64>();
+        let mut out_sign= vector::empty<u64>();
+
+        let mut i = 0;
+        while (i < len) {
+            let sa = *vector::borrow(&a.sign, i);
+            let ma = *vector::borrow(&a.magnitude, i);
+            let sb = *vector::borrow(&b.sign, i);
+            let mb = *vector::borrow(&b.magnitude, i);
+
+            let div_sgn = if (sa == sb) { 0 } else { 1 };
+            assert!(mb != 0, 9999);
+
+            assert!(ma == 0 || multiplier <= (18446744073709551615u64 / ma), 1304);
+            
+            let numerator = ma * multiplier;
+            let div_mag = numerator / mb;
+
+            vector::push_back(&mut out_sign, div_sgn);
+            vector::push_back(&mut out_mag,  div_mag);
+            i = i + 1;
+        };
+
+        new_tensor(copy a.shape, out_mag, out_sign, s)
+    }
+
+    /// @notice Optimized string conversion with O(1) scaling instead of O(n)
+    public fun to_string_optimized(tensor: &Tensor): vector<u8> {
+        let len = vector::length(&tensor.magnitude);
+
+        let mut bytes = vector::empty<u8>();
+
+        append_bytes(&mut bytes, &b"[");
+
+        let mut i = 0;
+        while (i < len) {
+        
+            let sgn = *vector::borrow(&tensor.sign, i);
+            if (sgn == 1) {
+                append_bytes(&mut bytes, &b"-");
+            };
+
+            let mag = *vector::borrow(&tensor.magnitude, i);
+            let divisor = math::scale_up_optimized(1, tensor.scale); // O(1) instead of O(scale)
+            let integer_val = mag / divisor;
+            let fraction_val = mag % divisor;
+
+            let int_bytes = u64_to_bytes(integer_val);  
+            append_bytes(&mut bytes, &int_bytes);
+            append_bytes(&mut bytes, &b".");
+
+            let frac_bytes = u64_to_bytes(fraction_val);
+            append_bytes(&mut bytes, &frac_bytes);
+
+            if (i < len - 1) {
+                append_bytes(&mut bytes, &b", ");
+            };
+
+            i = i + 1;
+        };
+
+        append_bytes(&mut bytes, &b"]");
+
+        bytes
     }
 
     public fun max_value(t: &Tensor): Tensor {
