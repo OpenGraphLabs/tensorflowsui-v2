@@ -27,10 +27,6 @@ module tensorflowsui::dataset {
     dataset_id: ID,
   }
 
-  /// Event emitted when a dataset becomes shared.
-  public struct DatasetSharedEvent has copy, drop {
-    dataset_id: ID,
-  }
 
   /// Emits a DatasetCreated event.
   public fun emit_dataset_created(dataset_id: ID) {
@@ -301,9 +297,8 @@ module tensorflowsui::dataset {
   }
 
   /// Makes an owned dataset into a shared object that anyone can access and modify.
-  public entry fun make_shared(dataset: Dataset) {
+  public entry fun share_dataset(dataset: Dataset) {
     let dataset_id = object::id(&dataset);
-    event::emit(DatasetSharedEvent { dataset_id });
     transfer::share_object(dataset);
   }
 }
