@@ -9,6 +9,7 @@ module tensorflowsui::dataset {
   use tensorflowsui::annotation;
   use sui::event;
   use sui::dynamic_field;
+  use sui::transfer;
 
   const OPENGRAPH_LICENSE: vector<u8> = b"OpenGraph License";
 
@@ -25,6 +26,7 @@ module tensorflowsui::dataset {
   public struct DatasetBurnedEvent has copy, drop {
     dataset_id: ID,
   }
+
 
   /// Emits a DatasetCreated event.
   public fun emit_dataset_created(dataset_id: ID) {
@@ -294,4 +296,9 @@ module tensorflowsui::dataset {
       d
   }
 
+  /// Makes an owned dataset into a shared object that anyone can access and modify.
+  public entry fun share_dataset(dataset: Dataset) {
+    let dataset_id = object::id(&dataset);
+    transfer::share_object(dataset);
+  }
 }
