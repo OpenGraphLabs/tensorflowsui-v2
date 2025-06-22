@@ -9,7 +9,6 @@ module tensorflowsui::dataset {
   use tensorflowsui::annotation;
   use sui::event;
   use sui::dynamic_field;
-  use sui::transfer;
 
   const OPENGRAPH_LICENSE: vector<u8> = b"OpenGraph License";
 
@@ -39,17 +38,6 @@ module tensorflowsui::dataset {
         dataset_id,
     });
   }
-
-  public struct Point has copy, drop, store {
-    x: u64,
-    y: u64,
-  }
-
-  public struct Edge has copy, drop, store {
-    start_idx: u64,
-    end_idx: u64,
-  }
-
 
   /// One-Time-Witness for the module.
   public struct DATASET has drop {}
@@ -298,7 +286,6 @@ module tensorflowsui::dataset {
 
   /// Makes an owned dataset into a shared object that anyone can access and modify.
   public entry fun share_dataset(dataset: Dataset) {
-    let dataset_id = object::id(&dataset);
     transfer::share_object(dataset);
   }
 }

@@ -2,123 +2,120 @@
 // SPDX-License-Identifier: Apache-2.0
 
 module tensorflowsui::math {
-  /// @notice Helper function to add two signed values
-  /// @param sign1 Sign of first value (0: positive, 1: negative)
-  /// @param magnitude1 Magnitude of first value
-  /// @param sign2 Sign of second value (0: positive, 1: negative)
-  /// @param magnitude2 Magnitude of second value
-  /// @return Tuple of (result_sign, result_magnitude)
-  public fun add_signed_number(
-      s1: u64, m1: u64,
-      s2: u64, m2: u64
+  use std::u64;
+
+  /// @dev Error when an overflow occurs
+  const EOverflow: u64 = 3001;
+  /// @dev Error when a scale is too large
+  const EScaleTooLarge: u64 = 3002;
+
+  const SignPositive: u64 = 0;
+  const SignNegative: u64 = 1;
+
+  // Pre-computed powers of 10 for O(1) lookup instead of O(n) loop
+  const SCALE_FACTORS: vector<u64> = vector[
+    1,                     // 10^0
+    10,                    // 10^1
+    100,                   // 10^2
+    1000,                  // 10^3
+    10000,                 // 10^4
+    100000,                // 10^5
+    1000000,               // 10^6
+    10000000,              // 10^7
+    100000000,             // 10^8
+    1000000000,            // 10^9
+    10000000000,           // 10^10
+    100000000000,          // 10^11
+    1000000000000,         // 10^12
+    10000000000000,        // 10^13
+    100000000000000,       // 10^14
+    1000000000000000,      // 10^15
+    10000000000000000,     // 10^16
+    100000000000000000,    // 10^17
+    1000000000000000000    // 10^18 (max safe for u64)
+  ];
+
+  public fun add(
+    s1: u64, m1: u64,
+    s2: u64, m2: u64,
   ): (u64, u64) {
     if (s1 == s2) {
       // Same sign: add magnitudes
-      // Overflow protection: check if m1 + m2 would overflow
-      assert!(m1 <= (18446744073709551615u64 - m2), 3001); // Prevent overflow
+      assert!(m1 <= (u64::max_value!() - m2), EOverflow); // check if m1 + m2 would overflow
       (s1, m1 + m2)
-    } else {
+    } else if (m1 >= m2) {
       // Different signs: subtract magnitudes
-      if (m1 >= m2) {
-        // First value has larger magnitude, keep its sign
-        (s1, m1 - m2)
+      (s1, m1 - m2)
+    } else {
+      (s2, m2 - m1)
+    }
+  }
+
+  /// @dev Multiplies two signed u64 values with an optional scale factor
+  /// if scale is greater than 0, scaling down is included in the multiplication.
+  public fun multiply(
+    s1: u64, m1: u64,
+    s2: u64, m2: u64,
+    scale: u64,
+  ): (u64, u64) {
+    if (m1 == 0 || m2 == 0) {
+      (SignPositive, 0)
+    } else {
+      let result_sign = if (s1 == s2) SignPositive else SignNegative;
+
+      assert!(m1 <= (u64::max_value!() / m2), EOverflow); // Check for overflow before multiplication
+
+      // Because each number is already scaled up, we need to scale down the multiplication result
+      let mut result_magnitude = m1 * m2;
+      if (scale > 0) {
+        result_magnitude = scale_down(result_magnitude, scale);
+
+        (result_sign, result_magnitude)
       } else {
-        // Second value has larger magnitude, use its sign
-        (s2, m2 - m1)
+        (result_sign, result_magnitude)
       }
     }
   }
 
-
-  /// @notice Compares two signed numbers and determines if first is greater than second
-  /// @param a_sign Sign of first number (0: positive, 1: negative)
-  /// @param a_mag Magnitude of first number
-  /// @param b_sign Sign of second number (0: positive, 1: negative)
-  /// @param b_mag Magnitude of second number
-  /// @return true if first number is greater than second number
-  public fun compare_signed_number(a_sign: u64, a_mag: u64, b_sign: u64, b_mag: u64): bool {
-    // If signs are different, positive is always greater than negative
-    if (a_sign != b_sign) {
-        return a_sign == 0
-    };
-    
-    // For same signs
-    if (a_sign == 0) {
-        // Both positive: compare magnitudes directly
-        a_mag > b_mag
+  public fun compare(s1: u64, m1: u64, s2: u64, m2: u64): bool {
+    if (s1 != s2) {
+      // If signs are different, positive is always greater than negative
+      s1 == SignPositive
+    }  else if (s1 == SignPositive) {
+      // Both positive: compare magnitudes directly
+      m1 > m2
     } else {
-        // Both negative: compare magnitudes inversely
-        a_mag < b_mag
+      // Both negative: compare magnitudes inversely
+      m1 < m2
     }
   }
 
-  /// @notice Helper function to convert scale to a factor
-  /// @param scale Scale value
-  /// @return 10^scale value
+  public fun is_positive(s: u64): bool {
+    s == SignPositive
+  }
+
   public fun get_scale_factor(scale: u64): u64 {
-    let mut factor = 1;
-    let mut i = 0;
-    while (i < scale) {
-        // Overflow protection: check if factor * 10 would overflow
-        assert!(factor <= (18446744073709551615u64 / 10), 3003); // Prevent overflow
-        factor = factor * 10;
-        i = i + 1;
-    };
+    let scale_factors = SCALE_FACTORS;
+    assert!(scale < vector::length(&scale_factors), EScaleTooLarge);
+    let factor = scale_factors[scale];
+
     factor
   }
 
-  /// @notice Scales up a value by a given scale
-  /// @param value The value to scale up
-  /// @param scale The scale to apply
-  /// @return The scaled up value
-  public fun scale_up(value: u64, scale:u64): u64 {
-    let mut result = value;
-    let mut i = 0;
-
-    while (i < scale) {
-        // Overflow protection: check if result * 10 would overflow
-        assert!(result <= (18446744073709551615u64 / 10), 3002); // Prevent overflow
-        result = result * 10;
-        i = i + 1;
-    };
-    result
-  }
-
-  /// @notice Optimized scale function using lookup table (much faster!)
-  /// @param value The value to scale up
-  /// @param scale The scale to apply (0-18 only)
-  /// @return The scaled up value
-  public fun scale_up_optimized(value: u64, scale: u64): u64 {
-    // Pre-computed powers of 10 for O(1) lookup instead of O(n) loop
-    let scale_factors = vector[
-        1,                     // 10^0
-        10,                    // 10^1
-        100,                   // 10^2
-        1000,                  // 10^3
-        10000,                 // 10^4
-        100000,                // 10^5
-        1000000,               // 10^6
-        10000000,              // 10^7
-        100000000,             // 10^8
-        1000000000,            // 10^9
-        10000000000,           // 10^10
-        100000000000,          // 10^11
-        1000000000000,         // 10^12
-        10000000000000,        // 10^13
-        100000000000000,       // 10^14
-        1000000000000000,      // 10^15
-        10000000000000000,     // 10^16
-        100000000000000000,    // 10^17
-        1000000000000000000    // 10^18 (max safe for u64)
-    ];
-    
-    assert!(scale < vector::length(&scale_factors), 3004); // Scale too large
-    
-    let factor = *vector::borrow(&scale_factors, scale);
-    
-    // Overflow protection
-    assert!(value == 0 || factor <= (18446744073709551615u64 / value), 3005);
+  public fun scale_up(value: u64, scale: u64): u64 {
+    let scale_factors = SCALE_FACTORS;
+    assert!(scale < vector::length(&scale_factors), EScaleTooLarge);
+    let factor = scale_factors[scale];
+    assert!(value == 0 || factor <= (u64::max_value!() / value), 3005); // Overflow protection
     
     value * factor
+  }
+
+  public fun scale_down(value: u64, scale: u64): u64 {
+    let scale_factors = SCALE_FACTORS;
+    assert!(scale < vector::length(&scale_factors), EScaleTooLarge);
+    let factor = scale_factors[scale];
+
+    value / factor
   }
 }
