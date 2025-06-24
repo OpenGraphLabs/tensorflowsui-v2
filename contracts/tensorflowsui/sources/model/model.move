@@ -10,7 +10,7 @@ module tensorflowsui::model {
     use std::string::{String};
     use tensorflowsui::tensor;
     use sui::event;
-    
+
     /// @dev Error when weight magnitude and sign vector lengths do not match
     const EWeightsVectorLengthMismatch: u64 = 1008;
     /// @dev Error when bias magnitude and sign vector lengths do not match
@@ -33,10 +33,6 @@ module tensorflowsui::model {
     const EInvalidModelState: u64 = 1021;
     /// @dev Error when partial layer parameters are invalid
     const EInvalidPartialLayerParams: u64 = 1023;
-    /// Error when output batch index is out of range
-    const EOutputBatchIndexOutOfBounds: u64 = 1024;
-    /// Error when input index is out of range
-    const EInputIndexOutOfBounds: u64 = 1025;
 
     // Model state constants
     const MODEL_STATE_INCOMPLETE: u8 = 0;
@@ -94,17 +90,6 @@ module tensorflowsui::model {
         layer_idx: u64,
         in_dimension: u64,
         out_dimension: u64,
-    }
-
-    /// @notice Event emitted when an input node computation is completed
-    public struct InputNodeComputed has copy, drop {
-        model_id: address,
-        layer_idx: u64,
-        input_idx: u64,
-        output_start_idx: u64,
-        output_end_idx: u64,
-        is_last_input: bool,
-        is_last_output_batch: bool,
     }
 
     /// @notice Event emitted when a partial layer computation is completed
@@ -303,23 +288,23 @@ module tensorflowsui::model {
     ) {
         // Model must be in incomplete state
         assert!(model.state == MODEL_STATE_INCOMPLETE, EInvalidModelState);
-        
+
         // Check if vectors have same length
         assert!(vector::length(&weights_magnitude) == vector::length(&weights_sign), EWeightsVectorLengthMismatch);
-        
+
         // Get current graph and layer
         let graph_idx = model.current_graph_idx;
         let layer_idx = model.current_layer_idx;
-        
+
         assert!(graph_idx < vector::length(&model.graphs), EGraphIndexOutOfBounds);
         assert!(layer_idx < graph::get_layer_count(&model.graphs[graph_idx]), ELayerIndexOutOfBounds);
-        
+
         // Get layer
         let layer = graph::get_layer_at_mut(&mut model.graphs[graph_idx], layer_idx);
-        
+
         // Add weights chunk
         layer::add_weights_chunk(layer, start_idx, weights_magnitude, weights_sign);
-        
+
         // Emit weights chunk added event
         event::emit(WeightsChunkAdded {
             model_id: object::id_address(model),
@@ -346,23 +331,23 @@ module tensorflowsui::model {
     ) {
         // Model must be in incomplete state
         assert!(model.state == MODEL_STATE_INCOMPLETE, EInvalidModelState);
-        
+
         // Check if vectors have same length
         assert!(vector::length(&biases_magnitude) == vector::length(&biases_sign), EBiasesVectorLengthMismatch);
-        
+
         // Get current graph and layer
         let graph_idx = model.current_graph_idx;
         let layer_idx = model.current_layer_idx;
-        
+
         assert!(graph_idx < vector::length(&model.graphs), EGraphIndexOutOfBounds);
         assert!(layer_idx < graph::get_layer_count(&model.graphs[graph_idx]), ELayerIndexOutOfBounds);
-        
+
         // Get layer
         let layer = graph::get_layer_at_mut(&mut model.graphs[graph_idx], layer_idx);
-        
+
         // Add biases chunk
         layer::add_biases_chunk(layer, start_idx, biases_magnitude, biases_sign);
-        
+
         // Emit biases chunk added event
         event::emit(BiasesChunkAdded {
             model_id: object::id_address(model),
@@ -506,37 +491,22 @@ module tensorflowsui::model {
         id.delete();
     }
 
-    /// @notice Helper function to get model name as String
-    /// @param model Model object
-    /// @return Name of the model
     public fun get_name(model: &Model): &String {
         &model.name
     }
 
-    /// @notice Helper function to get model description as String
-    /// @param model Model object
-    /// @return Description of the model
     public fun get_description(model: &Model): &String {
         &model.description
     }
 
-    /// @notice Helper function to get model task type as String
-    /// @param model Model object
-    /// @return Task type of the model (e.g., "classification", "regression")
     public fun get_task_type(model: &Model): &String {
         &model.task_type
     }
 
-    /// @notice Helper function to get model scale
-    /// @param model Model object
-    /// @return Scale value used for fixed-point calculations
     public fun get_scale(model: &Model): u64 {
         model.scale
     }
 
-    /// @notice Calculate the total number of layers in the model
-    /// @param model Model object
-    /// @return Total number of layers in the model
     fun get_total_layers(model: &Model): u64 {
         let graph_count = vector::length(&model.graphs);
         let mut total = 0;
@@ -550,8 +520,6 @@ module tensorflowsui::model {
         total
     }
 
-
-    /// Adds a test dataset to the model.
     public fun add_test_dataset(model: &mut Model, test_dataset: &dataset::Dataset) {
         if (option::is_none(&model.test_dataset_ids)) {
             model.test_dataset_ids = option::some(vector::empty<ID>());
@@ -559,8 +527,6 @@ module tensorflowsui::model {
         vector::push_back(option::borrow_mut(&mut model.test_dataset_ids), object::id(test_dataset));
     }
 
-    /// Removes a test dataset from the model.
-    /// Returns true if the dataset was found and removed, false otherwise.
     public fun remove_test_dataset(model: &mut Model, test_dataset_id: ID): bool {
         if (option::is_none(&model.test_dataset_ids)) {
             return false
@@ -579,17 +545,14 @@ module tensorflowsui::model {
         false
     }
 
-    /// Gets the training dataset ID.
     public fun get_training_dataset_id(model: &Model): Option<ID> {
         model.training_dataset_id
     }
 
-    /// Gets all test dataset IDs.
     public fun get_test_dataset_ids(model: &Model): &Option<vector<ID>> {
         &model.test_dataset_ids
     }
 
-    /// Gets the number of test datasets.
     public fun get_test_dataset_count(model: &Model): u64 {
         if (option::is_none(&model.test_dataset_ids)) {
             return 0
@@ -621,212 +584,6 @@ module tensorflowsui::model {
         
         max_idx
     }
-    
-    /// @notice Process a single input node against a batch of output nodes (gas efficient version)
-    /// @param model Model object to run inference on
-    /// @param layer_idx Index of the layer to process
-    /// @param input_idx Index of the input node to process
-    /// @param input_magnitude Magnitude values of the input vector
-    /// @param input_sign Sign values of the input vector
-    /// @param output_start_idx Starting index of output batch to process
-    /// @param output_batch_size Size of output batch to process
-    /// @param result_magnitudes Current accumulated magnitude results
-    /// @param result_signs Current accumulated sign results
-    /// @return Tuple of (result_magnitudes, result_signs, input_idx, next output_start_idx, is_last_input, is_last_output_batch)
-    public fun predict_layer_by_input_node(
-        model: &Model,
-        layer_idx: u64,
-        input_idx: u64,
-        input_magnitude: vector<u64>,
-        input_sign: vector<u64>,
-        output_start_idx: u64,
-        output_batch_size: u64,
-        mut result_magnitudes: vector<u64>,
-        mut result_signs: vector<u64>,
-    ): (vector<u64>, vector<u64>, u64, u64, bool, bool) {
-        // Validate model has at least one graph
-        assert!(vector::length(&model.graphs) > 0, EModelHasNoGraphs);
-        
-        // Get the first graph (currently we only support one graph per model)
-        let graph = vector::borrow(&model.graphs, 0);
-        
-        // Check if layer_idx is valid
-        let layer_count = graph::get_layer_count(graph);
-        assert!(layer_idx < layer_count, ELayerIndexOutOfBounds);
-        
-        // Get the target layer
-        let layer = graph::get_layer_at(graph, layer_idx);
-        let input_dim = layer::get_in_dimension(layer);
-        let output_dim = layer::get_out_dimension(layer);
-        
-        // Validate input index
-        assert!(input_idx < input_dim, EInputIndexOutOfBounds);
-        
-        // Validate input dimensions
-        assert!(vector::length(&input_magnitude) == input_dim, EInputDimensionMismatch);
-        assert!(vector::length(&input_sign) == input_dim, EInputDimensionMismatch);
-        
-        // Validate output batch bounds
-        assert!(output_start_idx < output_dim, EOutputBatchIndexOutOfBounds);
-        
-        // Check if this is the last layer
-        let is_last_layer = layer_idx == layer_count - 1;
-        
-        // Calculate the end index for output batch, capped at output_dim
-        let output_end_idx = if (output_start_idx + output_batch_size > output_dim) {
-            output_dim
-        } else {
-            output_start_idx + output_batch_size
-        };
-        
-        // Check if this is the last input node and last output batch
-        let is_last_input = input_idx == input_dim - 1;
-        let is_last_output_batch = output_end_idx == output_dim;
-        
-        // Get weight and bias tensors
-        let weight_tensor = layer::get_weight_tensor(layer);
-        let bias_tensor = layer::get_bias_tensor(layer);
-        
-        // Extract weight and bias data
-        let weight_mag = tensor::get_magnitude(weight_tensor);
-        let weight_sign = tensor::get_sign(weight_tensor);
-        let bias_mag = tensor::get_magnitude(bias_tensor);
-        let bias_sign = tensor::get_sign(bias_tensor);
-        
-        // Get input value for this node
-        let input_mag_val = *vector::borrow(&input_magnitude, input_idx);
-        let input_sign_val = *vector::borrow(&input_sign, input_idx);
-        
-        // Initialize or get the results vectors
-        // If first input node and first batch, ensure vectors are empty or correctly sized
-        if (input_idx == 0 && output_start_idx == 0) {
-            // If it's the first input node and first batch, initialize result vectors
-            // Either they should be empty or already sized correctly from previous layers
-            if (vector::length(&result_magnitudes) == 0) {
-                // First layer or empty results
-                // Add biases to initialize the result
-                let mut j = 0;
-                while (j < output_dim) {
-                    let bias_mag_val = if (j < vector::length(&bias_mag)) {
-                        *vector::borrow(&bias_mag, j)
-                    } else {
-                        0
-                    };
-                    
-                    let bias_sign_val = if (j < vector::length(&bias_sign)) {
-                        *vector::borrow(&bias_sign, j)
-                    } else {
-                        0
-                    };
-                    
-                    vector::push_back(&mut result_magnitudes, bias_mag_val);
-                    vector::push_back(&mut result_signs, bias_sign_val);
-                    
-                    j = j + 1;
-                };
-            } else {
-                // Verify results are correctly sized for this layer
-                assert!(vector::length(&result_magnitudes) == output_dim, ELayerDimensionMismatch);
-                assert!(vector::length(&result_signs) == output_dim, ELayerDimensionMismatch);
-            };
-        };
-        
-        // Process each output node in the batch for this input node
-        let mut j = output_start_idx;
-        while (j < output_end_idx) {
-            // Calculate weight index for this input-output connection
-            let weight_idx = input_idx * output_dim + j;
-            
-            if (weight_idx < vector::length(&weight_mag)) {
-                let weight_mag_val = *vector::borrow(&weight_mag, weight_idx);
-                let weight_sign_val = *vector::borrow(&weight_sign, weight_idx);
-                
-                // Multiply input value with weight
-                let product_mag = input_mag_val * weight_mag_val;
-                let product_sign = input_sign_val ^ weight_sign_val; // XOR for sign multiplication
-                
-                // Apply scaling after multiplication
-                let scaled_product_mag = math::scale_up(product_mag, model.scale);
-                
-                // Add to accumulated result
-                let result_mag = *vector::borrow(&result_magnitudes, j);
-                let result_sign = *vector::borrow(&result_signs, j);
-                
-                // Add product to result (considering signs)
-                let (new_mag, new_sign) = if (result_sign == product_sign) {
-                    // Same sign, simply add magnitudes
-                    (result_mag + scaled_product_mag, result_sign)
-                } else {
-                    // Different signs, subtract smaller from larger and determine sign
-                    if (result_mag > scaled_product_mag) {
-                        (result_mag - scaled_product_mag, result_sign)
-                    } else if (result_mag < scaled_product_mag) {
-                        (scaled_product_mag - result_mag, product_sign)
-                    } else {
-                        // Equal magnitudes with different signs cancel out
-                        (0, 0) // Default to positive for zero
-                    }
-                };
-                
-                // Update result vectors
-                *vector::borrow_mut(&mut result_magnitudes, j) = new_mag;
-                *vector::borrow_mut(&mut result_signs, j) = new_sign;
-            };
-            
-            j = j + 1;
-        };
-        
-        // If this is the last input node and last output batch, apply activation function
-        if (is_last_input && is_last_output_batch && !is_last_layer) {
-            // Apply ReLU activation: max(0, x) for all elements
-            let mut k = 0;
-            while (k < output_dim) {
-                let sign = *vector::borrow(&result_signs, k);
-                
-                // For ReLU, if sign is negative (1), set to zero
-                if (sign == 1) {
-                    *vector::borrow_mut(&mut result_magnitudes, k) = 0;
-                    *vector::borrow_mut(&mut result_signs, k) = 0;
-                };
-                
-                k = k + 1;
-            };
-        };
-        
-        // Emit input node computed event
-        event::emit(InputNodeComputed {
-            model_id: object::id_address(model),
-            layer_idx,
-            input_idx,
-            output_start_idx,
-            output_end_idx,
-            is_last_input,
-            is_last_output_batch,
-        });
-        
-        // If this is the last layer, last input, and last output batch, calculate argmax
-        if (is_last_layer && is_last_input && is_last_output_batch) {
-            // Calculate argmax from the results
-            let argmax_idx = find_argmax(&result_magnitudes, &result_signs);
-            
-            // Emit completion event with the results
-            event::emit(PredictionCompleted {
-                model_id: object::id_address(model),
-                output_magnitude: result_magnitudes,
-                output_sign: result_signs,
-                argmax_idx
-            });
-        };
-        
-        // Return the updated results, current input index, and next output batch start index
-        let next_output_start_idx = if (is_last_output_batch) {
-            0 // Reset to 0 for next input node
-        } else {
-            output_end_idx // Continue from where we left off
-        };
-        
-        (result_magnitudes, result_signs, input_idx, next_output_start_idx, is_last_input, is_last_output_batch)
-    }
 
     /// Process a single output dimension by chunks of input nodes
     /// @param model Model object to run inference on
@@ -854,25 +611,21 @@ module tensorflowsui::model {
         mut result_magnitudes: vector<u64>,
         mut result_signs: vector<u64>,
     ): (vector<u64>, vector<u64>, u64, u64) {
-        // Validate model has at least one graph
         assert!(vector::length(&model.graphs) > 0, EModelHasNoGraphs);
         
         // Get the first graph (currently we only support one graph per model)
         let graph = vector::borrow(&model.graphs, 0);
         
-        // Check if layer_idx is valid
+        // Validate layer index
         let layer_count = graph::get_layer_count(graph);
         assert!(layer_idx < layer_count, ELayerIndexOutOfBounds);
-        
-        // Get the target layer
+
         let layer = graph::get_layer_at(graph, layer_idx);
         let input_dim = layer::get_in_dimension(layer);
         let output_dim = layer::get_out_dimension(layer);
         
-        // Validate output dimension index
+        // Validate input/output dimension
         assert!(output_dim_idx < output_dim, EDimensionIndexOutOfBounds);
-        
-        // Validate input dimensions
         assert!(vector::length(&input_magnitude) == input_dim, EInputDimensionMismatch);
         assert!(vector::length(&input_sign) == input_dim, EInputDimensionMismatch);
         
@@ -926,30 +679,17 @@ module tensorflowsui::model {
                 let input_sign_val = *vector::borrow(&input_sign, i);
                 
                 // Multiply
-                let product_mag = input_mag_val * weight_mag_val;
-                let product_sign = input_sign_val ^ weight_sign_val; // XOR for sign multiplication
-                
-                // Apply scaling after multiplication
-                let scaled_product_mag = math::scale_up(product_mag, model.scale);
-                
-                // Add to result (considering signs)
-                if (current_sign == product_sign) {
-                    // Same sign, simply add magnitudes
-                    current_magnitude = current_magnitude + scaled_product_mag;
-                } else {
-                    // Different signs, subtract smaller from larger and determine sign
-                    if (current_magnitude > scaled_product_mag) {
-                        current_magnitude = current_magnitude - scaled_product_mag;
-                        // current_sign stays the same
-                    } else if (current_magnitude < scaled_product_mag) {
-                        current_magnitude = scaled_product_mag - current_magnitude;
-                        current_sign = product_sign; // Take sign of the larger value
-                    } else {
-                        // Equal magnitudes with different signs cancel out
-                        current_magnitude = 0;
-                        current_sign = 0; // Default to positive for zero
-                    }
-                };
+                let (product_sign, product_mag) = math::multiply(
+                    input_sign_val, input_mag_val,
+                    weight_sign_val, weight_mag_val,
+                    model.scale,
+                );
+
+                // Add to result
+                (current_sign, current_magnitude) = math::add(
+                    current_sign, current_magnitude,
+                    product_sign, product_mag,
+                );
             };
             
             i = i + 1;
@@ -1014,13 +754,12 @@ module tensorflowsui::model {
         mut result_magnitudes: vector<u64>,
         mut result_signs: vector<u64>,
     ): (vector<u64>, vector<u64>, u64, bool) {
-        // Validate model has at least one graph
         assert!(vector::length(&model.graphs) > 0, EModelHasNoGraphs);
         
         // Get the first graph (currently we only support one graph per model)
         let graph = vector::borrow(&model.graphs, 0);
         
-        // Check if layer_idx is valid
+        // Validate layer index
         let layer_count = graph::get_layer_count(graph);
         assert!(layer_idx < layer_count, ELayerIndexOutOfBounds);
         
@@ -1029,10 +768,8 @@ module tensorflowsui::model {
         let input_dim = layer::get_in_dimension(layer);
         let output_dim = layer::get_out_dimension(layer);
         
-        // Validate output dimension index
+        // Validate input/output dimension
         assert!(output_dim_idx < output_dim, EDimensionIndexOutOfBounds);
-        
-        // Validate input dimensions
         assert!(vector::length(&input_magnitude) == input_dim, EInputDimensionMismatch);
         assert!(vector::length(&input_sign) == input_dim, EInputDimensionMismatch);
         
@@ -1074,32 +811,19 @@ module tensorflowsui::model {
                 // Get input value
                 let input_mag_val = *vector::borrow(&input_magnitude, i);
                 let input_sign_val = *vector::borrow(&input_sign, i);
-                
+
                 // Multiply
-                let product_mag = input_mag_val * weight_mag_val;
-                let product_sign = input_sign_val ^ weight_sign_val; // XOR for sign multiplication
-                
-                // Apply scaling after multiplication
-                let scaled_product_mag = math::scale_up(product_mag, model.scale);
-                
-                // Add to result (considering signs)
-                if (result_sign == product_sign) {
-                    // Same sign, simply add magnitudes
-                    result_mag = result_mag + scaled_product_mag;
-                } else {
-                    // Different signs, subtract smaller from larger and determine sign
-                    if (result_mag > scaled_product_mag) {
-                        result_mag = result_mag - scaled_product_mag;
-                        // result_sign stays the same
-                    } else if (result_mag < scaled_product_mag) {
-                        result_mag = scaled_product_mag - result_mag;
-                        result_sign = product_sign; // Take sign of the larger value
-                    } else {
-                        // Equal magnitudes with different signs cancel out
-                        result_mag = 0;
-                        result_sign = 0; // Default to positive for zero
-                    }
-                };
+                let (product_sign, product_mag) = math::multiply(
+                    input_sign_val, input_mag_val,
+                    weight_sign_val, weight_mag_val,
+                    model.scale,
+                );
+
+                // Add to result
+                (result_sign, result_mag) = math::add(
+                    result_sign, result_mag,
+                    product_sign, product_mag,
+                );
             };
             
             i = i + 1;

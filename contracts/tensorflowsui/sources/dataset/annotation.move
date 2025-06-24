@@ -43,13 +43,13 @@ module tensorflowsui::annotation {
   }
 
   public struct Point has copy, drop, store {
-    x: u64,
-    y: u64,
+    // x: u64,
+    // y: u64,
   }
 
   public struct Edge has copy, drop, store {
-    start_idx: u64,
-    end_idx: u64,
+    // start_idx: u64,
+    // end_idx: u64,
   }
 
   public struct AnnotationPath has copy, drop, store {
