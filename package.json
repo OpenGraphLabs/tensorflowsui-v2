@@ -2,10 +2,10 @@
   "name": "tensorflowsui-inference",
   "version": "1.0.0",
   "description": "Neural network inference client for TensorFlowSUI",
-  "main": "inference.ts",
+  "main": "contracts/tensorflowsui/sources/experiment/inference.ts",
   "scripts": {
     "build": "tsc",
-    "start": "ts-node inference.ts"
+    "start": "ts-node contracts/tensorflowsui/sources/experiment/inference.ts"
   },
   "dependencies": {
     "@mysten/sui.js": "^0.49.1"

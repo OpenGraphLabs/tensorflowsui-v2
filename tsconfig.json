@@ -10,6 +10,6 @@
     "outDir": "./dist",
     "declaration": true
   },
-  "include": ["*.ts"],
+  "include": ["*.ts", "contracts/tensorflowsui/sources/experiment/inference.ts"],
   "exclude": ["node_modules", "dist"]
 } 
